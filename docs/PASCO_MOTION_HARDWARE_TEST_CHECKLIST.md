@@ -5,7 +5,7 @@
 > 진단 JSON을 저장해 주세요.
 
 ## 준비
-- [ ] 1. Chrome 또는 Edge에서 **HTTPS 배포 페이지** 열기 (예: `https://pasco01.labbitory.com`)
+- [ ] 1. Chrome 또는 Edge에서 **HTTPS 배포 페이지** 열기 (예: `https://pasco03.labbitory.com`)
 - [ ] 2. PASCO **PS-3219 전원 켜기** (LED 확인)
 
 ## 연결

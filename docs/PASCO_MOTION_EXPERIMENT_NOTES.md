@@ -65,7 +65,7 @@ labbitory-cloudflare/
    (색/폰트/헤더/마스코트 자산)를 재사용**하되 운동 실험 앱을 새 서브 프로젝트로 구현했습니다.
 2. 저장소에 차트 라이브러리·Gemini 백엔드가 없으므로, 표준적이고 교실 친화적인 **Chart.js**와
    **Cloudflare Pages Function**을 도입했습니다(서브도메인 배포 패턴과 일치).
-3. 배포 시 이 앱은 자체 Pages 프로젝트(예: `pasco01.labbitory.com`)로 올라가며, 허브의
+3. 배포 시 이 앱은 자체 Pages 프로젝트(예: `pasco03.labbitory.com`)로 올라가며, 허브의
    `pasco.html`이 이를 링크합니다.
 
 ---
