@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>등속 운동하는 물체의 운동 그래프 — 파스코 척척박사 | labbitory.com</title>
+<meta name="description" content="PASCO Wireless Motion Sensor 호환 교육용 웹앱 — 등속 운동의 시간–이동 거리·시간–속력 그래프를 만들고 해석합니다.">
+<link rel="icon" type="image/png" href="https://labbitory.com/assets/logo-circle.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+<link rel="stylesheet" href="./src/styles.css">
+</head>
+<body>
+<div class="page">
+  <div class="blob blob-tr" aria-hidden="true"></div>
+  <div class="blob blob-bl" aria-hidden="true"></div>
+
+  <header class="site-header">
+    <a class="brand" href="https://labbitory.com/index.html">
+      <img src="https://labbitory.com/assets/logo-circle.png" alt="labbitory 로고">
+      <span>labbitory<i>.com</i></span>
+    </a>
+    <a class="crumb" href="https://labbitory.com/pasco.html">← 파스코 척척박사</a>
+  </header>
+
+  <main class="exp-main">
+    <div class="exp-head">
+      <p class="eyebrow">파스코 척척박사 · EXPERIMENT 01</p>
+      <h1 class="exp-h1">등속 운동하는 물체의 운동 그래프</h1>
+      <p class="exp-sub">PASCO 초음파 운동 센서로 자동차의 운동을 측정하고, 두 그래프로 등속 운동을 탐구해요.</p>
+    </div>
+
+    <!-- progress stepper -->
+    <nav class="stepper" id="stepper" aria-label="실험 단계"></nav>
+
+    <!-- step content rendered here -->
+    <section class="step-host" id="app" aria-live="polite"></section>
+
+    <!-- printable report (hidden on screen) -->
+    <div id="report" class="report-print"></div>
+
+    <p class="trademark">
+      PASCO Wireless Motion Sensor 호환 교육용 웹앱 · PASCO 및 관련 제품명은 해당 권리자의 상표입니다.
+      이 웹앱은 PASCO의 공식 제품 또는 공식 승인 서비스가 아닙니다.
+    </p>
+  </main>
+</div>
+<script type="module" src="./src/main.ts"></script>
+</body>
+</html>

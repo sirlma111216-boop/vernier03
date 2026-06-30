@@ -1,0 +1,28 @@
+{
+  "name": "pasco-motion",
+  "version": "1.0.0",
+  "private": true,
+  "description": "등속 운동하는 물체의 운동 그래프 — PASCO Wireless Motion Sensor(PS-3219) 호환 교육용 웹앱",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "lint": "eslint . --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "chart.js": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/web-bluetooth": "^0.0.21",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "eslint": "^8.57.0",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2",
+    "vitest": "^2.0.5"
+  }
+}
