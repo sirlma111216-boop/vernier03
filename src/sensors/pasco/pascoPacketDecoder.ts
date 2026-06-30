@@ -105,3 +105,47 @@ export function decodeMeasurement(
   }
   return decodeUintLE(payload, offset, spec.dataSize);
 }
+
+export interface ScannedMotion {
+  /** Plausible position in meters. */
+  positionM: number;
+  /** Byte offset within the raw packet where the position float was found. */
+  positionOffset: number;
+  /** Best-effort velocity candidate (m/s) from the next 4 bytes, for diagnostics. */
+  velocityCandidateMps: number | null;
+}
+
+/**
+ * Layout-robust extraction of a plausible position from a raw PASCO notification.
+ *
+ * The exact PS-3219 channel byte-layout is not yet hardware-confirmed (see
+ * docs/PASCO_MOTION_EXPERIMENT_NOTES.md §4), and the device may reply with a
+ * one-shot GRSP_RESULT packet (payload at byte 3) or stream periodic packets
+ * (payload at byte 1) — possibly with extra channels such as acceleration.
+ *
+ * Rather than assume a fixed offset, we scan every byte offset for the first
+ * IEEE-754 little-endian float that falls in the physically-plausible position
+ * range (m). At rest, velocity and acceleration are ~0 (outside the range), so
+ * the position field is selected reliably. The raw bytes are always preserved
+ * in diagnostics so the true layout can be confirmed later.
+ */
+export function scanMotionFromRaw(
+  data: Uint8Array,
+  opts: { minPosM?: number; maxPosM?: number; maxVelMps?: number } = {},
+): ScannedMotion | null {
+  const minPos = opts.minPosM ?? 0.15;
+  const maxPos = opts.maxPosM ?? 5.0;
+  const maxVel = opts.maxVelMps ?? 15;
+  for (let off = 0; off + 4 <= data.length; off++) {
+    const v = decodeFloat32LE(data, off);
+    if (Number.isFinite(v) && v >= minPos && v <= maxPos) {
+      let velocityCandidateMps: number | null = null;
+      if (off + 8 <= data.length) {
+        const vv = decodeFloat32LE(data, off + 4);
+        if (Number.isFinite(vv) && Math.abs(vv) <= maxVel) velocityCandidateMps = vv;
+      }
+      return { positionM: v, positionOffset: off, velocityCandidateMps };
+    }
+  }
+  return null;
+}

@@ -7,6 +7,14 @@
  *  - No synthetic data is ever produced here. If decoding fails, the caller is
  *    told and the diagnostic panel exposes the raw packets for a second
  *    hardware-debugging iteration.
+ *
+ * Layout robustness: the exact PS-3219 channel byte-layout is not yet
+ * hardware-confirmed, and the device may either reply to one-shot reads or
+ * stream periodic packets. So we (a) nudge with a one-shot read command AND
+ * accept auto-streamed packets, and (b) decode position by scanning the raw
+ * packet for a plausible-position float at any offset. Speed is DERIVED from
+ * the position signal (the velocity field offset is not yet confirmed); the
+ * decoded velocity candidate is still recorded in diagnostics.
  */
 
 import type {
@@ -24,19 +32,12 @@ import {
   parsePascoName,
 } from "./pascoBluetoothConstants";
 import { DiagnosticsCollector } from "./pascoDiagnostics";
-import {
-  bytesToHex,
-  decodeChannelPayload,
-  parseNotification,
-} from "./pascoPacketDecoder";
-import {
-  MOTION_CHANNEL_LAYOUT,
-  buildReadOneSampleCommand,
-  pickMeasurement,
-} from "./pascoProtocol";
+import { bytesToHex, scanMotionFromRaw } from "./pascoPacketDecoder";
+import { MOTION_CHANNEL_LAYOUT, buildReadOneSampleCommand } from "./pascoProtocol";
 
 const CONNECT_TIMEOUT_MS = 15000;
-const FIRST_SAMPLE_TIMEOUT_MS = 6000;
+const FIRST_SAMPLE_TIMEOUT_MS = 10000;
+const PACKET_WAIT_MS = 1200;
 
 export class PascoMotionAdapter implements MotionSensorAdapter {
   private device: BluetoothDevice | null = null;
@@ -48,11 +49,12 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
   private connected = false;
   private streaming = false;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
-  private inFlight = false;
+  private nudging = false;
 
   private sampleCallbacks = new Set<(s: RawMotionSample) => void>();
   private disconnectCallbacks = new Set<() => void>();
-  private pendingResolve: ((payload: Uint8Array) => void) | null = null;
+  private packetWaiters: ((data: Uint8Array) => void)[] = [];
+  private lastRaw: Uint8Array | null = null;
 
   static isSupported(): boolean {
     return typeof navigator !== "undefined" && !!navigator.bluetooth;
@@ -158,7 +160,7 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.diag.setError(message);
-      if (message.includes("cancelled") || message.includes("User cancelled")) {
+      if (message.toLowerCase().includes("cancel") || message.includes("취소")) {
         this.diag.setState("연결되지 않음");
       } else {
         this.diag.setState("측정값 해석 오류");
@@ -168,25 +170,24 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
     }
   }
 
-  /** Polls one-shot reads until a physically-plausible position is decoded. */
+  /**
+   * Repeatedly nudges with a one-shot read and inspects every incoming packet
+   * (one-shot response OR auto-stream) until a physically-plausible position is
+   * decoded. Never throws on a single timeout — only after the overall deadline.
+   */
   private async readFirstValidPosition(): Promise<number> {
     const deadline = Date.now() + FIRST_SAMPLE_TIMEOUT_MS;
     while (Date.now() < deadline) {
-      const payload = await this.requestOneSample();
-      const decoded = decodeChannelPayload(payload, MOTION_CHANNEL_LAYOUT);
-      const hex = bytesToHex(payload);
-      const position = pickMeasurement(decoded, "Position");
-      const velocity = pickMeasurement(decoded, "Velocity");
-      this.diag.recordSample(
-        position,
-        velocity,
-        payload,
-        Object.fromEntries(decoded.map((d) => [d.name, d.value])),
-        "sensor",
-        hex,
-      );
-      if (position !== null && isPlausiblePositionM(position)) {
-        return position;
+      await this.sendOneShotNudge();
+      let data: Uint8Array | null = null;
+      try {
+        data = await this.waitNextPacket(PACKET_WAIT_MS);
+      } catch {
+        data = this.lastRaw;
+      }
+      if (data) {
+        const pos = scanMotionFromRaw(data)?.positionM ?? null;
+        if (pos !== null && isPlausiblePositionM(pos)) return pos;
       }
     }
     throw new Error(
@@ -194,54 +195,87 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
     );
   }
 
-  /** Sends a one-shot read and awaits the matching response payload. */
-  private async requestOneSample(): Promise<Uint8Array> {
-    if (!this.sendChar) throw new Error("명령 특성을 찾을 수 없습니다.");
-    if (this.inFlight) throw new Error("이전 측정 요청이 아직 끝나지 않았습니다.");
-    this.inFlight = true;
+  /** Best-effort one-shot read command. Ignores write errors (device may auto-stream). */
+  private async sendOneShotNudge(): Promise<void> {
+    if (!this.sendChar || this.nudging) return;
+    this.nudging = true;
     try {
-      const payloadPromise = new Promise<Uint8Array>((resolve, reject) => {
-        this.pendingResolve = resolve;
-        setTimeout(() => {
-          if (this.pendingResolve === resolve) {
-            this.pendingResolve = null;
-            reject(new Error("측정 응답 시간 초과"));
-          }
-        }, 2000);
-      });
       const cmd = buildReadOneSampleCommand(MOTION_CHANNEL_LAYOUT);
       await this.sendChar.writeValue(cmd as unknown as BufferSource);
-      return await payloadPromise;
+    } catch {
+      /* device may stream without one-shot commands; ignore */
     } finally {
-      this.inFlight = false;
+      this.nudging = false;
     }
+  }
+
+  /** Resolves with the next raw notification packet, or rejects on timeout. */
+  private waitNextPacket(timeoutMs: number): Promise<Uint8Array> {
+    return new Promise((resolve, reject) => {
+      const onPacket = (d: Uint8Array): void => {
+        clearTimeout(timer);
+        resolve(d);
+      };
+      const timer = setTimeout(() => {
+        this.packetWaiters = this.packetWaiters.filter((w) => w !== onPacket);
+        reject(new Error("패킷 대기 시간 초과"));
+      }, timeoutMs);
+      this.packetWaiters.push(onPacket);
+    });
   }
 
   private handleNotification = (event: Event): void => {
     const char = event.target as BluetoothRemoteGATTCharacteristic;
     const dv = char.value;
     if (!dv) return;
-    const data = new Uint8Array(dv.buffer);
-    const parsed = parseNotification(data);
-    if (parsed.payload && this.pendingResolve) {
-      const resolve = this.pendingResolve;
-      this.pendingResolve = null;
-      resolve(parsed.payload);
+    // Copy out of the shared backing buffer.
+    const data = new Uint8Array(dv.buffer.slice(dv.byteOffset, dv.byteOffset + dv.byteLength));
+    this.lastRaw = data;
+
+    const scanned = scanMotionFromRaw(data);
+    const position = scanned ? scanned.positionM : null;
+    this.diag.recordSample(
+      position,
+      scanned?.velocityCandidateMps ?? null,
+      data,
+      {
+        Position: position,
+        VelocityCandidate: scanned?.velocityCandidateMps ?? null,
+        byteOffset: scanned ? scanned.positionOffset : -1,
+      },
+      "derived",
+      bytesToHex(data),
+    );
+
+    if (this.streaming && position !== null) {
+      const sample: RawMotionSample = {
+        timestampMs: performance.now(),
+        rawPositionM: position,
+        // Speed is derived from position; the velocity field offset is not yet
+        // hardware-confirmed (candidate is kept in diagnostics only).
+        rawVelocityMps: null,
+      };
+      this.sampleCallbacks.forEach((cb) => cb(sample));
     }
+
+    // Wake any waiters.
+    const waiters = this.packetWaiters;
+    this.packetWaiters = [];
+    waiters.forEach((fn) => fn(data));
   };
 
   async readPosition(): Promise<number> {
-    const payload = await this.requestOneSample();
-    const decoded = decodeChannelPayload(payload, MOTION_CHANNEL_LAYOUT);
-    const position = pickMeasurement(decoded, "Position");
-    if (position === null) throw new Error("위치 자료를 해석하지 못했습니다.");
-    return position;
+    await this.sendOneShotNudge();
+    const data = await this.waitNextPacket(2000);
+    const pos = scanMotionFromRaw(data)?.positionM ?? null;
+    if (pos === null) throw new Error("위치 자료를 해석하지 못했습니다.");
+    return pos;
   }
 
   async readVelocity(): Promise<number | null> {
-    const payload = await this.requestOneSample();
-    const decoded = decodeChannelPayload(payload, MOTION_CHANNEL_LAYOUT);
-    return pickMeasurement(decoded, "Velocity");
+    await this.sendOneShotNudge();
+    const data = await this.waitNextPacket(2000);
+    return scanMotionFromRaw(data)?.velocityCandidateMps ?? null;
   }
 
   async startStreaming(options: MotionStreamingOptions): Promise<void> {
@@ -249,31 +283,11 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
     if (this.streaming) return;
     this.streaming = true;
     const intervalMs = Math.max(20, Math.round(1000 / options.sampleRateHz));
-    this.pollTimer = setInterval(async () => {
-      if (this.inFlight) return; // never overlap reads
-      try {
-        const payload = await this.requestOneSample();
-        const decoded = decodeChannelPayload(payload, MOTION_CHANNEL_LAYOUT);
-        const position = pickMeasurement(decoded, "Position");
-        const velocity = pickMeasurement(decoded, "Velocity");
-        this.diag.recordSample(
-          position,
-          velocity,
-          payload,
-          Object.fromEntries(decoded.map((d) => [d.name, d.value])),
-          velocity !== null ? "sensor" : "derived",
-          bytesToHex(payload),
-        );
-        if (position === null) return;
-        const sample: RawMotionSample = {
-          timestampMs: performance.now(),
-          rawPositionM: position,
-          rawVelocityMps: velocity,
-        };
-        this.sampleCallbacks.forEach((cb) => cb(sample));
-      } catch (err) {
-        this.diag.setError(err instanceof Error ? err.message : String(err));
-      }
+    // Nudge with one-shot reads at the sample rate. Auto-streaming devices keep
+    // sending packets on their own; the nudge is harmless there. Sample emission
+    // happens in handleNotification.
+    this.pollTimer = setInterval(() => {
+      void this.sendOneShotNudge();
     }, intervalMs);
   }
 
@@ -311,8 +325,9 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
       this.sendChar = null;
       this.recvChar = null;
       this.server = null;
-      this.pendingResolve = null;
-      this.inFlight = false;
+      this.packetWaiters = [];
+      this.lastRaw = null;
+      this.nudging = false;
     }
   }
 

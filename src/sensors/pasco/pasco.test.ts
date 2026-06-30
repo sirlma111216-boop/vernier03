@@ -10,6 +10,7 @@ import {
   decodeChannelPayload,
   decodeFloat32LE,
   parseNotification,
+  scanMotionFromRaw,
 } from "./pascoPacketDecoder";
 import {
   MOTION_CHANNEL_LAYOUT,
@@ -84,6 +85,35 @@ describe("valid position/velocity packet decoding", () => {
 
   it("decodes raw little-endian float bytes", () => {
     expect(decodeFloat32LE(new Uint8Array(floatLE(1.5)), 0)).toBeCloseTo(1.5, 6);
+  });
+});
+
+describe("layout-robust position scan (unknown PS-3219 layout)", () => {
+  it("finds position in a one-shot GRSP_RESULT packet (payload at byte 3)", () => {
+    const packet = new Uint8Array([0xc0, 0x00, 0x05, ...floatLE(0.823), ...floatLE(0.0)]);
+    const scanned = scanMotionFromRaw(packet);
+    expect(scanned).not.toBeNull();
+    expect(scanned!.positionM).toBeCloseTo(0.823, 4);
+    expect(scanned!.positionOffset).toBe(3);
+  });
+
+  it("finds position in a periodic packet (payload at byte 1)", () => {
+    const packet = new Uint8Array([0x07, ...floatLE(1.42), ...floatLE(0.0)]);
+    const scanned = scanMotionFromRaw(packet);
+    expect(scanned!.positionM).toBeCloseTo(1.42, 4);
+    expect(scanned!.positionOffset).toBe(1);
+  });
+
+  it("skips a near-zero leading field (velocity/accel at rest) and finds position after it", () => {
+    // [counter, velocity≈0, position=0.55]
+    const packet = new Uint8Array([0x03, ...floatLE(0.0), ...floatLE(0.55)]);
+    const scanned = scanMotionFromRaw(packet);
+    expect(scanned!.positionM).toBeCloseTo(0.55, 4);
+  });
+
+  it("returns null when no plausible position is present", () => {
+    const packet = new Uint8Array([0xc0, 0x00, 0x05, ...floatLE(99), ...floatLE(0)]);
+    expect(scanMotionFromRaw(packet)).toBeNull();
   });
 });
 
