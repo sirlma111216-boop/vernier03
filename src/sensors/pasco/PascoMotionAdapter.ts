@@ -5,16 +5,17 @@
  *  - `connect()` only resolves with hasValidPosition=true after at least one
  *    physically-plausible position value has actually been decoded.
  *  - No synthetic data is ever produced here. If decoding fails, the caller is
- *    told and the diagnostic panel exposes the raw packets for a second
- *    hardware-debugging iteration.
+ *    told and the diagnostic panel exposes the discovered services/characteristics
+ *    and raw packets for a second hardware-debugging iteration.
  *
- * Layout robustness: the exact PS-3219 channel byte-layout is not yet
- * hardware-confirmed, and the device may either reply to one-shot reads or
- * stream periodic packets. So we (a) nudge with a one-shot read command AND
- * accept auto-streamed packets, and (b) decode position by scanning the raw
- * packet for a plausible-position float at any offset. Speed is DERIVED from
- * the position signal (the velocity field offset is not yet confirmed); the
- * decoded velocity candidate is still recorded in diagnostics.
+ * Robustness (no confirmed PS-3219 layout yet):
+ *  - GATT SCANNER: enumerate every authorized PASCO service and characteristic,
+ *    record them to diagnostics, and operate across whichever service actually
+ *    carries the sensor data. (On PASCO sensors, sensor-data characteristics live
+ *    on a channel service id = sensor_id + 1, NOT operations service 0.)
+ *  - Accept BOTH one-shot responses and auto-streamed periodic packets.
+ *  - Decode position by scanning the raw packet for a plausible-position float at
+ *    any offset; derive speed from position (velocity field not yet confirmed).
  */
 
 import type {
@@ -26,9 +27,10 @@ import type {
 } from "../types";
 import { isPlausiblePositionM } from "../motion/motionDataProcessing";
 import {
-  OPERATIONS_SERVICE_UUID,
-  RECV_CMD_CHAR_UUID,
-  SEND_CMD_CHAR_UUID,
+  RECV_CMD_SEGMENT,
+  SEND_CMD_SEGMENT,
+  candidateServiceUuids,
+  charIdSegment,
   parsePascoName,
 } from "./pascoBluetoothConstants";
 import { DiagnosticsCollector } from "./pascoDiagnostics";
@@ -42,8 +44,8 @@ const PACKET_WAIT_MS = 1200;
 export class PascoMotionAdapter implements MotionSensorAdapter {
   private device: BluetoothDevice | null = null;
   private server: BluetoothRemoteGATTServer | null = null;
-  private sendChar: BluetoothRemoteGATTCharacteristic | null = null;
-  private recvChar: BluetoothRemoteGATTCharacteristic | null = null;
+  private sendChars: BluetoothRemoteGATTCharacteristic[] = [];
+  private recvChars: BluetoothRemoteGATTCharacteristic[] = [];
 
   private diag = new DiagnosticsCollector(false);
   private connected = false;
@@ -105,11 +107,12 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
       throw new Error("HTTPS 연결 필요");
     }
 
+    const serviceUuids = candidateServiceUuids();
     try {
       this.diag.setState("기기 선택 중");
       this.device = await navigator.bluetooth.requestDevice({
-        filters: [{ services: [OPERATIONS_SERVICE_UUID] }, { namePrefix: "Motion" }],
-        optionalServices: [OPERATIONS_SERVICE_UUID],
+        filters: [{ namePrefix: "Motion" }, { services: [serviceUuids[0]] }],
+        optionalServices: serviceUuids,
       });
 
       const parsed = parsePascoName(this.device.name ?? "");
@@ -124,13 +127,13 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
       );
 
       this.diag.setState("센서 정보 확인 중");
-      const service = await this.server.getPrimaryService(OPERATIONS_SERVICE_UUID);
-      this.diag.setServices([OPERATIONS_SERVICE_UUID]);
+      await this.discoverServices();
 
-      this.sendChar = await service.getCharacteristic(SEND_CMD_CHAR_UUID);
-      this.recvChar = await service.getCharacteristic(RECV_CMD_CHAR_UUID);
-      this.diag.addCharacteristic(SEND_CMD_CHAR_UUID, ["write"]);
-      this.diag.addCharacteristic(RECV_CMD_CHAR_UUID, ["notify"]);
+      if (this.recvChars.length === 0) {
+        throw new Error(
+          "센서에서 알림(notify) 특성을 찾지 못했습니다. 교사용 PASCO 연결 진단을 확인해 주세요.",
+        );
+      }
 
       this.diag.setState("측정 항목 확인 중");
       this.diag.setMeasurements(
@@ -139,11 +142,14 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
         MOTION_CHANNEL_LAYOUT.measurements.map((m) => m.unit),
       );
 
-      await this.recvChar.startNotifications();
-      this.recvChar.addEventListener(
-        "characteristicvaluechanged",
-        this.handleNotification,
-      );
+      for (const recv of this.recvChars) {
+        try {
+          await recv.startNotifications();
+          recv.addEventListener("characteristicvaluechanged", this.handleNotification);
+        } catch (e) {
+          this.diag.log(`알림 시작 실패: ${recv.uuid} (${(e as Error).message})`);
+        }
+      }
 
       this.diag.setState("첫 위치 자료 확인 중");
       const firstPosition = await this.readFirstValidPosition();
@@ -170,10 +176,67 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
     }
   }
 
+  /** Enumerate every authorized service + characteristic and classify them. */
+  private async discoverServices(): Promise<void> {
+    if (!this.server) return;
+    let services: BluetoothRemoteGATTService[] = [];
+    try {
+      services = await this.server.getPrimaryServices();
+    } catch (e) {
+      this.diag.log(`서비스 목록 조회 실패: ${(e as Error).message}`);
+    }
+    this.diag.setServices(services.map((s) => s.uuid));
+    this.diag.log(`발견한 서비스 ${services.length}개`);
+
+    const sendByExact: BluetoothRemoteGATTCharacteristic[] = [];
+    const recvByExact: BluetoothRemoteGATTCharacteristic[] = [];
+    const sendWritable: BluetoothRemoteGATTCharacteristic[] = [];
+    const recvNotify: BluetoothRemoteGATTCharacteristic[] = [];
+
+    for (const service of services) {
+      let chars: BluetoothRemoteGATTCharacteristic[] = [];
+      try {
+        chars = await service.getCharacteristics();
+      } catch (e) {
+        this.diag.log(`특성 조회 실패: ${service.uuid} (${(e as Error).message})`);
+        continue;
+      }
+      for (const c of chars) {
+        const p = c.properties;
+        const props: string[] = [];
+        if (p.read) props.push("read");
+        if (p.write) props.push("write");
+        if (p.writeWithoutResponse) props.push("writeWithoutResponse");
+        if (p.notify) props.push("notify");
+        if (p.indicate) props.push("indicate");
+        this.diag.addCharacteristic(c.uuid, props);
+
+        const seg = charIdSegment(c.uuid);
+        const writable = p.write || p.writeWithoutResponse;
+        const notifies = p.notify || p.indicate;
+        if (writable) {
+          sendWritable.push(c);
+          if (seg === SEND_CMD_SEGMENT) sendByExact.push(c);
+        }
+        if (notifies) {
+          recvNotify.push(c);
+          if (seg === RECV_CMD_SEGMENT) recvByExact.push(c);
+        }
+      }
+    }
+
+    // Prefer the official command characteristics; fall back to any matching props.
+    this.sendChars = sendByExact.length ? sendByExact : sendWritable;
+    this.recvChars = recvByExact.length ? recvByExact : recvNotify;
+    this.diag.log(
+      `명령 특성 ${this.sendChars.length}개 / 알림 특성 ${this.recvChars.length}개`,
+    );
+  }
+
   /**
-   * Repeatedly nudges with a one-shot read and inspects every incoming packet
-   * (one-shot response OR auto-stream) until a physically-plausible position is
-   * decoded. Never throws on a single timeout — only after the overall deadline.
+   * Nudges with a one-shot read on every command characteristic and inspects
+   * every incoming packet until a physically-plausible position is decoded.
+   * Never throws on a single timeout — only after the overall deadline.
    */
   private async readFirstValidPosition(): Promise<number> {
     const deadline = Date.now() + FIRST_SAMPLE_TIMEOUT_MS;
@@ -195,15 +258,19 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
     );
   }
 
-  /** Best-effort one-shot read command. Ignores write errors (device may auto-stream). */
+  /** Best-effort one-shot read on all command characteristics (write errors ignored). */
   private async sendOneShotNudge(): Promise<void> {
-    if (!this.sendChar || this.nudging) return;
+    if (this.sendChars.length === 0 || this.nudging) return;
     this.nudging = true;
+    const cmd = buildReadOneSampleCommand(MOTION_CHANNEL_LAYOUT);
     try {
-      const cmd = buildReadOneSampleCommand(MOTION_CHANNEL_LAYOUT);
-      await this.sendChar.writeValue(cmd as unknown as BufferSource);
-    } catch {
-      /* device may stream without one-shot commands; ignore */
+      for (const send of this.sendChars) {
+        try {
+          await send.writeValue(cmd as unknown as BufferSource);
+        } catch {
+          /* device may stream without one-shot commands; ignore */
+        }
+      }
     } finally {
       this.nudging = false;
     }
@@ -228,7 +295,6 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
     const char = event.target as BluetoothRemoteGATTCharacteristic;
     const dv = char.value;
     if (!dv) return;
-    // Copy out of the shared backing buffer.
     const data = new Uint8Array(dv.buffer.slice(dv.byteOffset, dv.byteOffset + dv.byteLength));
     this.lastRaw = data;
 
@@ -244,21 +310,18 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
         byteOffset: scanned ? scanned.positionOffset : -1,
       },
       "derived",
-      bytesToHex(data),
+      `${char.uuid.slice(0, 13)} · ${bytesToHex(data)}`,
     );
 
     if (this.streaming && position !== null) {
       const sample: RawMotionSample = {
         timestampMs: performance.now(),
         rawPositionM: position,
-        // Speed is derived from position; the velocity field offset is not yet
-        // hardware-confirmed (candidate is kept in diagnostics only).
-        rawVelocityMps: null,
+        rawVelocityMps: null, // speed derived; velocity offset not yet confirmed
       };
       this.sampleCallbacks.forEach((cb) => cb(sample));
     }
 
-    // Wake any waiters.
     const waiters = this.packetWaiters;
     this.packetWaiters = [];
     waiters.forEach((fn) => fn(data));
@@ -283,9 +346,6 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
     if (this.streaming) return;
     this.streaming = true;
     const intervalMs = Math.max(20, Math.round(1000 / options.sampleRateHz));
-    // Nudge with one-shot reads at the sample rate. Auto-streaming devices keep
-    // sending packets on their own; the nudge is harmless there. Sample emission
-    // happens in handleNotification.
     this.pollTimer = setInterval(() => {
       void this.sendOneShotNudge();
     }, intervalMs);
@@ -307,13 +367,10 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
 
   private async cleanup(): Promise<void> {
     try {
-      if (this.recvChar) {
-        this.recvChar.removeEventListener(
-          "characteristicvaluechanged",
-          this.handleNotification,
-        );
+      for (const recv of this.recvChars) {
+        recv.removeEventListener("characteristicvaluechanged", this.handleNotification);
         try {
-          await this.recvChar.stopNotifications();
+          await recv.stopNotifications();
         } catch {
           /* ignore */
         }
@@ -322,8 +379,8 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
     } finally {
       this.connected = false;
       this.streaming = false;
-      this.sendChar = null;
-      this.recvChar = null;
+      this.sendChars = [];
+      this.recvChars = [];
       this.server = null;
       this.packetWaiters = [];
       this.lastRaw = null;

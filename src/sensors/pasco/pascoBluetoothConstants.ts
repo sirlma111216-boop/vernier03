@@ -19,6 +19,27 @@ export function pascoUuid(serviceId: number, characteristicId: number): string {
 /** The base service id used for sensor operations is 0. */
 export const OPERATIONS_SERVICE_ID = 0;
 
+/**
+ * Candidate service UUIDs (service 0 = operations, services 1..N = sensor
+ * channels). Web Bluetooth only lets us enumerate/access services that were
+ * pre-authorized in requestDevice's optionalServices, and the PS-3219's actual
+ * sensor-data characteristics live on a channel service (id = sensor_id + 1),
+ * not service 0 — so we authorize a small range and discover which exist.
+ */
+export function candidateServiceUuids(maxServiceId = 7): string[] {
+  const out: string[] = [];
+  for (let i = 0; i <= maxServiceId; i++) out.push(pascoUuid(i, 0));
+  return out;
+}
+
+/** The char-id segment of a PASCO characteristic UUID, e.g. "0002" for SEND_CMD. */
+export function charIdSegment(uuid: string): string {
+  return uuid.split("-")[1] ?? "";
+}
+
+export const SEND_CMD_SEGMENT = "0002";
+export const RECV_CMD_SEGMENT = "0003";
+
 /** Fixed characteristic ids within a service (from the official library). */
 export const SEND_CMD_CHAR_ID = 2; // host -> sensor commands
 export const RECV_CMD_CHAR_ID = 3; // sensor -> host notifications

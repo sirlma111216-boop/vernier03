@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  candidateServiceUuids,
+  charIdSegment,
   decodePascoBase64,
   parsePascoName,
   pascoUuid,
@@ -56,6 +58,21 @@ describe("PASCO device-name parsing", () => {
     expect(decodePascoBase64("9")).toBe(9);
     expect(decodePascoBase64("A")).toBe(10);
     expect(decodePascoBase64("?")).toBeNull();
+  });
+});
+
+describe("service discovery helpers", () => {
+  it("pre-authorizes a range of channel service UUIDs (0..N)", () => {
+    const uuids = candidateServiceUuids(3);
+    expect(uuids).toHaveLength(4);
+    expect(uuids[0]).toBe("4a5c0000-0000-0000-0000-5c1e741f1c00");
+    expect(uuids[1]).toBe("4a5c0001-0000-0000-0000-5c1e741f1c00"); // sensor channel 1
+  });
+
+  it("extracts the char-id segment used to classify send/recv characteristics", () => {
+    expect(charIdSegment(SEND_CMD_CHAR_UUID)).toBe("0002");
+    expect(charIdSegment(RECV_CMD_CHAR_UUID)).toBe("0003");
+    expect(charIdSegment(pascoUuid(1, 2))).toBe("0002");
   });
 });
 

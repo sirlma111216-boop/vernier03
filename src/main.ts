@@ -35,6 +35,9 @@ const STEP_TITLES = [
 // ---- app state ----
 const model: AppModel = createEmptyModel();
 let adapter: MotionSensorAdapter | null = null;
+// Keeps the most recent PASCO attempt so the teacher diagnostics panel can show
+// discovered services / timeline / errors even when a connection FAILS.
+let lastPascoAttempt: PascoMotionAdapter | null = null;
 let isDemoAdapter = false;
 let connected = false;
 let charts: MotionCharts | null = null;
@@ -317,6 +320,7 @@ function renderConnect(): void {
     connectBtn.disabled = true;
     demoBtn.disabled = true;
     const pasco = new PascoMotionAdapter();
+    lastPascoAttempt = pasco;
     const off = pasco.onSample((raw) => {
       const d = qs("#connDist");
       const sp = qs("#connSpeed");
@@ -349,6 +353,9 @@ function renderConnect(): void {
       setState(msg.includes("해석") ? "측정값 해석 오류" : (kind === "idle" ? "연결되지 않음" : "연결 끊김"), kind === "idle" ? "idle" : "err");
       connectBtn.disabled = false;
       demoBtn.disabled = false;
+      // Surface diagnostics immediately so the teacher can see what failed.
+      const panel = qs<HTMLDetailsElement>("#diagPanel");
+      if (panel) panel.open = true;
       refreshDiagnostics();
     }
   });
@@ -983,37 +990,61 @@ function diagnosticsPanel(): HTMLElement {
 
 function refreshDiagnostics(): void {
   const body = qs("#diagBody");
-  if (!body || !adapter) return;
-  const d = adapter.getDiagnostics();
+  if (!body) return;
+  // Use the live adapter if present, otherwise the most recent PASCO attempt so
+  // a FAILED connection still shows its timeline / discovered services / error.
+  const src = adapter ?? lastPascoAttempt;
+  if (!src) return;
+  const d = src.getDiagnostics();
+  const pasco = src instanceof PascoMotionAdapter ? src : null;
+
   const grid = el("div", { class: "diag-grid" });
   const row = (k: string, v: string) => { grid.append(el("div", { class: "k", textContent: k }), el("div", { class: "v", textContent: v })); };
   row("기기 이름", d.deviceName ?? "—");
   row("센서 ID", d.parsedSensorId ?? "—");
   row("인터페이스 ID", d.interfaceId !== null ? String(d.interfaceId) : "—");
   row("연결 상태", d.connectionState);
-  row("서비스", d.services.join(", ") || "—");
+  row("발견한 서비스", d.services.join(", ") || "—");
+  row("발견한 특성 수", String(d.characteristics.length));
   row("측정 항목", d.measurementNames.join(", ") || "—");
   row("단위", d.units.join(", ") || "—");
   row("현재 위치(m)", d.currentRawPositionM !== null ? fmt(d.currentRawPositionM, 3) : "—");
-  row("현재 속도(m/s)", d.currentRawVelocityMps !== null ? fmt(d.currentRawVelocityMps, 3) : "—");
-  row("속력 자료 출처", d.velocitySource ?? "—");
+  row("현재 속도 후보(m/s)", d.currentRawVelocityMps !== null ? fmt(d.currentRawVelocityMps, 3) : "—");
+  row("속력 자료 출처", d.velocitySource === "sensor" ? "PASCO 센서 측정값" : d.velocitySource === "derived" ? "위치 자료로부터 계산한 값" : "—");
   row("시연 여부", d.isDemo ? "예 (센서 없이 시연 중)" : "아니오");
   row("마지막 오류", d.lastError ?? "—");
 
   const body2 = el("div");
   body2.append(grid);
+
+  // Discovered characteristics with properties (helps locate the data service).
+  if (d.characteristics.length) {
+    body2.append(el("div", { class: "k", style: "margin-top:10px", textContent: "발견한 특성 (UUID · 속성)" }));
+    body2.append(el("pre", {
+      textContent: d.characteristics.map((c) => `${c.uuid}  [${c.properties.join(", ")}]`).join("\n"),
+    }));
+  }
+
   body2.append(el("div", { class: "k", style: "margin-top:10px", textContent: "최근 원시 패킷(hex)" }));
   body2.append(el("pre", { textContent: d.lastRawPacketHex ?? "—" }));
+
+  // Connection timeline — the key evidence when a connection fails.
+  if (d.timeline.length) {
+    body2.append(el("div", { class: "k", style: "margin-top:10px", textContent: "연결 진행 기록" }));
+    body2.append(el("pre", {
+      textContent: d.timeline.map((t) => `+${(t.timeMs / 1000).toFixed(1)}s  ${t.message}`).join("\n"),
+    }));
+  }
 
   const btns = el("div", { class: "btn-row" });
   btns.append(
     el("button", { class: "btn btn-neutral", textContent: "진단 정보 복사", onclick: () => navigator.clipboard?.writeText(JSON.stringify(d, null, 2)) }),
     el("button", { class: "btn btn-neutral", textContent: "진단 정보 JSON 저장", onclick: () => downloadJson("pasco-motion-diagnostics.json", d) }),
   );
-  if (!d.isDemo && adapter instanceof PascoMotionAdapter) {
+  if (pasco && !d.isDemo) {
     btns.append(
-      el("button", { class: "btn btn-neutral", textContent: "원시 패킷 기록 시작", onclick: () => { (adapter as PascoMotionAdapter).startPacketLog(); } }),
-      el("button", { class: "btn btn-neutral", textContent: "원시 패킷 기록 중지", onclick: () => { (adapter as PascoMotionAdapter).stopPacketLog(); refreshDiagnostics(); } }),
+      el("button", { class: "btn btn-neutral", textContent: "원시 패킷 기록 시작", onclick: () => { pasco.startPacketLog(); } }),
+      el("button", { class: "btn btn-neutral", textContent: "원시 패킷 기록 중지", onclick: () => { pasco.stopPacketLog(); refreshDiagnostics(); } }),
     );
   }
   btns.append(el("button", { class: "btn btn-neutral", textContent: "새로고침", onclick: () => refreshDiagnostics() }));
