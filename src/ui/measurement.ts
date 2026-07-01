@@ -49,6 +49,7 @@ export class MeasurementController {
   private rawDuringMotion: RawMotionSample[] = [];
   private baselineSamples: number[] = [];
   private speedWindow: number[] = [];
+  private prevSample: RawMotionSample | null = null;
   private initialPositionM = 0;
   private startTimeMs = 0;
   private timers: ReturnType<typeof setTimeout>[] = [];
@@ -89,6 +90,10 @@ export class MeasurementController {
     const pos = sample.rawPositionM;
     if (!isPlausiblePositionM(pos)) return;
 
+    // Speed relative to the PREVIOUS sample (works before recording starts).
+    const prev = this.prevSample;
+    this.prevSample = sample;
+
     if (this.phase === "baseline") {
       this.baselineSamples.push(pos);
       // ~0.6 s of baseline at the configured rate.
@@ -101,15 +106,23 @@ export class MeasurementController {
     }
 
     if (this.phase === "waiting-motion") {
-      const speed = this.instantaneousSpeed(sample);
+      const speed = this.speedBetween(prev, sample);
+      // Live feedback so the sensor distance/speed visibly update while waiting.
+      this.events.onLiveStats?.({
+        elapsedS: 0,
+        movementCm: 0,
+        speedCmps: speed,
+        rawPositionM: pos,
+      });
       this.speedWindow.push(speed);
       if (this.speedWindow.length > 4) this.speedWindow.shift();
       const sustained =
         this.speedWindow.length >= 3 &&
         this.speedWindow.slice(-3).every((v) => v >= this.settings.startThresholdCmps);
       if (sustained) {
-        this.startTimeMs = sample.timestampMs;
-        this.rawDuringMotion = [sample];
+        // Start t=0 at the sample where motion began (a few samples back).
+        this.startTimeMs = (prev ?? sample).timestampMs;
+        this.rawDuringMotion = prev ? [prev, sample] : [sample];
         this.setPhase("recording", "측정 중…");
         this.scheduleStop();
       }
@@ -122,9 +135,9 @@ export class MeasurementController {
     }
   }
 
-  private instantaneousSpeed(sample: RawMotionSample): number {
+  /** Speed (cm/s) between two consecutive samples; sensor velocity if provided. */
+  private speedBetween(prev: RawMotionSample | null, sample: RawMotionSample): number {
     if (sample.rawVelocityMps !== null) return speedFromVelocityMps(sample.rawVelocityMps);
-    const prev = this.rawDuringMotion[this.rawDuringMotion.length - 1];
     if (!prev) return 0;
     const dt = (sample.timestampMs - prev.timestampMs) / 1000;
     if (dt <= 0) return 0;
@@ -156,6 +169,27 @@ export class MeasurementController {
     this.recordingStopTimer = setTimeout(() => {
       void this.finish();
     }, this.settings.durationS * 1000);
+  }
+
+  /**
+   * Manually begin recording immediately (the "측정 시작" button), bypassing
+   * automatic motion detection. Usable once the starting position is known.
+   */
+  forceStart(): void {
+    if (this.phase !== "baseline" && this.phase !== "waiting-motion") return;
+    if (this.baselineSamples.length > 0) {
+      this.initialPositionM = median(this.baselineSamples);
+    }
+    const s = this.prevSample;
+    this.startTimeMs = s ? s.timestampMs : performance.now();
+    this.rawDuringMotion = s ? [s] : [];
+    this.setPhase("recording", "측정 중…");
+    this.scheduleStop();
+  }
+
+  /** Whether the run is currently waiting for the car to start moving. */
+  isWaitingForMotion(): boolean {
+    return this.phase === "waiting-motion";
   }
 
   /** Manual stop — usable at any time. */
@@ -224,6 +258,7 @@ export class MeasurementController {
     this.rawDuringMotion = [];
     this.baselineSamples = [];
     this.speedWindow = [];
+    this.prevSample = null;
     this.reversed = false;
     this.phase = "idle";
   }

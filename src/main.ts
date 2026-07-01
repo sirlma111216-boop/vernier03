@@ -338,7 +338,7 @@ function renderConnect(): void {
       const st = qs("#connStatus"); if (st) st.textContent = "연결 완료";
       disconnectBtn.disabled = false;
       // start a light live stream for the connection cards
-      await pasco.startStreaming({ sampleRateHz: 5 });
+      await pasco.startStreaming({ sampleRateHz: 10 });
       pasco.onDisconnect(() => {
         connected = false;
         setState("연결 끊김", "err");
@@ -438,11 +438,13 @@ function renderMeasure(): void {
   // controls
   const ctl = el("div", { class: "btn-row" });
   const prepBtn = el("button", { class: "btn btn-primary", textContent: "측정 준비" });
+  const startBtn = el("button", { class: "btn btn-primary", textContent: "측정 시작" });
   const stopBtn = el("button", { class: "btn btn-orange", textContent: "측정 중지" });
   const redoBtn = el("button", { class: "btn btn-ghost", textContent: "다시 측정" });
   const clearBtn = el("button", { class: "btn btn-neutral", textContent: "측정값 초기화" });
+  startBtn.disabled = true;
   stopBtn.disabled = true;
-  ctl.append(prepBtn, stopBtn, redoBtn, clearBtn);
+  ctl.append(prepBtn, startBtn, stopBtn, redoBtn, clearBtn);
   card.append(ctl);
 
   const resultHost = el("div", { id: "measureResult" });
@@ -466,6 +468,12 @@ function renderMeasure(): void {
       wrap.className = "state-pill " + (phase === "recording" || phase === "baseline" || phase === "waiting-motion" || phase === "countdown" ? "busy" : phase === "done" ? "ok" : phase === "error" ? "err" : "idle");
     }
     const cd = qs("#countdown"); if (cd && phase !== "countdown") cd.style.display = "none";
+    // "측정 시작" is available only while waiting for the car to start moving.
+    startBtn.disabled = phase !== "waiting-motion";
+    if (phase === "done" || phase === "error" || phase === "idle") {
+      prepBtn.disabled = false;
+      stopBtn.disabled = true;
+    }
   };
 
   const startMeasurement = () => {
@@ -475,6 +483,7 @@ function renderMeasure(): void {
     model.trials.forEach((t, i) => charts!.setTrial(i + 1, t.label, t.samples)); // keep prior trials visible offset
     qs("#measureResult")!.replaceChildren();
     prepBtn.disabled = true;
+    startBtn.disabled = true;
     stopBtn.disabled = false;
 
     measurement = new MeasurementController(adapter, settings, {
@@ -513,6 +522,7 @@ function renderMeasure(): void {
   };
 
   prepBtn.addEventListener("click", startMeasurement);
+  startBtn.addEventListener("click", () => { measurement?.forceStart(); });
   stopBtn.addEventListener("click", () => { void measurement?.stop(); });
   redoBtn.addEventListener("click", startMeasurement);
   clearBtn.addEventListener("click", () => {
