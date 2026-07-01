@@ -74,6 +74,8 @@ export interface MotionSensorDiagnostics {
   timeline: { timeMs: number; message: string }[];
   /** Optional captured raw packets (hex) when packet logging is enabled. */
   packetLog?: string[];
+  /** Most recent raw packet (hex) seen on each notify characteristic UUID. */
+  lastPacketByChar?: Record<string, string>;
   isDemo: boolean;
 }
 

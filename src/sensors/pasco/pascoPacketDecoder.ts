@@ -136,7 +136,10 @@ export function scanMotionFromRaw(
   const minPos = opts.minPosM ?? 0.15;
   const maxPos = opts.maxPosM ?? 5.0;
   const maxVel = opts.maxVelMps ?? 15;
-  for (let off = 0; off + 4 <= data.length; off++) {
+  // Never scan the GRSP_RESULT header bytes (0xC0 status cmd …) — interpreting
+  // them as a float produces a bogus fixed "position" (e.g. c0 00 05 3f ≈ 0.52 m).
+  const start = data.length >= 3 && data[0] === GRSP_RESULT ? 3 : 0;
+  for (let off = start; off + 4 <= data.length; off++) {
     const v = decodeFloat32LE(data, off);
     if (Number.isFinite(v) && v >= minPos && v <= maxPos) {
       let velocityCandidateMps: number | null = null;

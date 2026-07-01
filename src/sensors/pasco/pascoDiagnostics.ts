@@ -27,6 +27,7 @@ export class DiagnosticsCollector {
       lastError: null,
       timeline: [],
       packetLog: [],
+      lastPacketByChar: {},
       isDemo,
     };
   }
@@ -88,6 +89,12 @@ export class DiagnosticsCollector {
         .map((b) => b.toString(16).padStart(2, "0"))
         .join(" ");
     }
+  }
+
+  /** Record the latest raw packet (hex) seen on a specific characteristic. */
+  recordCharPacket(uuid: string, hex: string): void {
+    if (!this.state.lastPacketByChar) this.state.lastPacketByChar = {};
+    this.state.lastPacketByChar[uuid] = hex;
   }
 
   startPacketLog(): void {

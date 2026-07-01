@@ -132,6 +132,16 @@ describe("layout-robust position scan (unknown PS-3219 layout)", () => {
     const packet = new Uint8Array([0xc0, 0x00, 0x05, ...floatLE(99), ...floatLE(0)]);
     expect(scanMotionFromRaw(packet)).toBeNull();
   });
+
+  it("does NOT mis-read the GRSP header bytes as a position (real PS-3219 packet)", () => {
+    // Captured from a real PS-3219 on char 4a5c0000-0003. The bytes c0 00 05 3f
+    // interpreted as a float ≈ 0.52 m — a false positive we must reject by
+    // skipping the 3-byte GRSP header before scanning the payload.
+    const packet = new Uint8Array([
+      0xc0, 0x00, 0x05, 0x3f, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+    expect(scanMotionFromRaw(packet)).toBeNull();
+  });
 });
 
 describe("invalid packet rejection", () => {

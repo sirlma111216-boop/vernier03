@@ -34,7 +34,7 @@ import {
   parsePascoName,
 } from "./pascoBluetoothConstants";
 import { DiagnosticsCollector } from "./pascoDiagnostics";
-import { bytesToHex, scanMotionFromRaw } from "./pascoPacketDecoder";
+import { bytesToHex, decodeUintLE, scanMotionFromRaw } from "./pascoPacketDecoder";
 import { MOTION_CHANNEL_LAYOUT, buildReadOneSampleCommand } from "./pascoProtocol";
 
 const CONNECT_TIMEOUT_MS = 15000;
@@ -225,11 +225,15 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
       }
     }
 
-    // Prefer the official command characteristics; fall back to any matching props.
+    // Command writes: prefer the official SEND (…-0002) characteristics.
     this.sendChars = sendByExact.length ? sendByExact : sendWritable;
-    this.recvChars = recvByExact.length ? recvByExact : recvNotify;
+    // Notifications: subscribe to EVERY notify characteristic. The live sensor
+    // data is not on the …-0003 command char but on a dedicated data channel
+    // (observed: …-0001-0004 [read, notify]), so we must listen on all of them.
+    this.recvChars = recvNotify.length ? recvNotify : recvByExact;
     this.diag.log(
-      `명령 특성 ${this.sendChars.length}개 / 알림 특성 ${this.recvChars.length}개`,
+      `명령 특성 ${this.sendChars.length}개 / 알림 특성 ${this.recvChars.length}개 ` +
+        `(${this.recvChars.map((c) => charIdSegment(c.uuid)).join(",")})`,
     );
   }
 
@@ -297,9 +301,15 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
     if (!dv) return;
     const data = new Uint8Array(dv.buffer.slice(dv.byteOffset, dv.byteOffset + dv.byteLength));
     this.lastRaw = data;
+    this.diag.recordCharPacket(char.uuid, bytesToHex(data));
 
     const scanned = scanMotionFromRaw(data);
     const position = scanned ? scanned.positionM : null;
+    // Integer candidates from the header-stripped payload (in case position is
+    // RawDigital, not a float) — helps calibrate the true scale from hardware.
+    const payloadStart = data.length >= 3 && data[0] === 0xc0 ? 3 : 0;
+    const intCandidate =
+      payloadStart + 4 <= data.length ? decodeUintLE(data, payloadStart, 4) : null;
     this.diag.recordSample(
       position,
       scanned?.velocityCandidateMps ?? null,
@@ -308,6 +318,7 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
         Position: position,
         VelocityCandidate: scanned?.velocityCandidateMps ?? null,
         byteOffset: scanned ? scanned.positionOffset : -1,
+        payloadIntCandidate: intCandidate,
       },
       "derived",
       `${char.uuid.slice(0, 13)} · ${bytesToHex(data)}`,

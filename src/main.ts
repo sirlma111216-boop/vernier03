@@ -1028,6 +1028,15 @@ function refreshDiagnostics(): void {
   body2.append(el("div", { class: "k", style: "margin-top:10px", textContent: "최근 원시 패킷(hex)" }));
   body2.append(el("pre", { textContent: d.lastRawPacketHex ?? "—" }));
 
+  // Latest packet per characteristic — reveals which char carries live data.
+  const byChar = d.lastPacketByChar ?? {};
+  if (Object.keys(byChar).length) {
+    body2.append(el("div", { class: "k", style: "margin-top:10px", textContent: "특성별 최근 패킷(hex)" }));
+    body2.append(el("pre", {
+      textContent: Object.entries(byChar).map(([uuid, hex]) => `${uuid.slice(0, 13)} · ${hex}`).join("\n"),
+    }));
+  }
+
   // Connection timeline — the key evidence when a connection fails.
   if (d.timeline.length) {
     body2.append(el("div", { class: "k", style: "margin-top:10px", textContent: "연결 진행 기록" }));
