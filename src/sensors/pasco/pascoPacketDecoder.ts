@@ -106,49 +106,50 @@ export function decodeMeasurement(
   return decodeUintLE(payload, offset, spec.dataSize);
 }
 
-export interface ScannedMotion {
-  /** Plausible position in meters. */
+/**
+ * EchoTime→Position conversion.
+ *
+ * The Motion sensor streams EchoTime as a 2-byte integer: the ultrasonic
+ * round-trip time in microseconds. Distance to the object is:
+ *   Position(m) = speedOfSound(344 m/s) × (echo_µs × 1e-6 s) / 2
+ *              = echo × 344 / 2 × 1e-6 = echo × 1.72e-4
+ * (÷2 because the pulse travels to the object AND back.)
+ *
+ * Confirmed against real PS-3219 packets: echo 1089 → 0.187 m (~20 cm start),
+ * echo 2623 → 0.451 m. Speed of sound comes from the datasheet Params="344".
+ */
+export const SPEED_OF_SOUND_MPS = 344;
+export const ECHO_TIME_TO_METERS = (SPEED_OF_SOUND_MPS / 2) * 1e-6;
+
+export interface DecodedMotion {
+  /** Raw EchoTime value (round-trip microseconds). */
+  echoTimeRaw: number;
+  /** Distance from sensor to object, in meters. */
   positionM: number;
-  /** Byte offset within the raw packet where the position float was found. */
-  positionOffset: number;
-  /** Best-effort velocity candidate (m/s) from the next 4 bytes, for diagnostics. */
-  velocityCandidateMps: number | null;
+  /** Byte offset of the EchoTime field within the raw packet. */
+  payloadOffset: number;
 }
 
 /**
- * Layout-robust extraction of a plausible position from a raw PASCO notification.
+ * Decode a Motion one-shot notification into EchoTime + Position.
  *
- * The exact PS-3219 channel byte-layout is not yet hardware-confirmed (see
- * docs/PASCO_MOTION_EXPERIMENT_NOTES.md §4), and the device may reply with a
- * one-shot GRSP_RESULT packet (payload at byte 3) or stream periodic packets
- * (payload at byte 1) — possibly with extra channels such as acceleration.
- *
- * Rather than assume a fixed offset, we scan every byte offset for the first
- * IEEE-754 little-endian float that falls in the physically-plausible position
- * range (m). At rest, velocity and acceleration are ~0 (outside the range), so
- * the position field is selected reliably. The raw bytes are always preserved
- * in diagnostics so the true layout can be confirmed later.
+ * Packet shape (observed on real PS-3219): GRSP_RESULT `c0 00 <cmd> <echoLo echoHi> …`
+ * — EchoTime is the first payload value (uint16 little-endian) after the 3-byte
+ * header. A raw stream without the 0xC0 header is read from offset 0.
+ * Returns null if the resulting position is outside the plausible range.
  */
-export function scanMotionFromRaw(
+export function decodeMotionPacket(
   data: Uint8Array,
-  opts: { minPosM?: number; maxPosM?: number; maxVelMps?: number } = {},
-): ScannedMotion | null {
-  const minPos = opts.minPosM ?? 0.15;
-  const maxPos = opts.maxPosM ?? 5.0;
-  const maxVel = opts.maxVelMps ?? 15;
-  // Never scan the GRSP_RESULT header bytes (0xC0 status cmd …) — interpreting
-  // them as a float produces a bogus fixed "position" (e.g. c0 00 05 3f ≈ 0.52 m).
-  const start = data.length >= 3 && data[0] === GRSP_RESULT ? 3 : 0;
-  for (let off = start; off + 4 <= data.length; off++) {
-    const v = decodeFloat32LE(data, off);
-    if (Number.isFinite(v) && v >= minPos && v <= maxPos) {
-      let velocityCandidateMps: number | null = null;
-      if (off + 8 <= data.length) {
-        const vv = decodeFloat32LE(data, off + 4);
-        if (Number.isFinite(vv) && Math.abs(vv) <= maxVel) velocityCandidateMps = vv;
-      }
-      return { positionM: v, positionOffset: off, velocityCandidateMps };
-    }
+  opts: { minPosM?: number; maxPosM?: number } = {},
+): DecodedMotion | null {
+  const minPos = opts.minPosM ?? 0.05;
+  const maxPos = opts.maxPosM ?? 8.5;
+  const start = data.length >= 5 && data[0] === GRSP_RESULT && data[1] === 0x00 ? 3 : 0;
+  if (start + 2 > data.length) return null;
+  const echoTimeRaw = data[start] | (data[start + 1] << 8); // uint16 LE
+  const positionM = echoTimeRaw * ECHO_TIME_TO_METERS;
+  if (!Number.isFinite(positionM) || positionM < minPos || positionM > maxPos) {
+    return null;
   }
-  return null;
+  return { echoTimeRaw, positionM, payloadOffset: start };
 }

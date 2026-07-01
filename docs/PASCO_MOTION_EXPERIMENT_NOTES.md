@@ -104,7 +104,29 @@ labbitory-cloudflare/
 - **디코드:** "Direct" 측정은 **4바이트 little-endian IEEE-754 float**, "RawDigital"은
   다바이트 little-endian 정수.
 
-### 미확보 정보(문서화된 공백) — Fallback 적용
+### 측정 디코딩 — 실측으로 확정 (2026-07-01)
+공식 데이터시트(`datasheets.py`, Tag="MotionSensor", ID=1130, Model PS-2103A/무선 PS-3219)와
+실제 PS-3219 패킷으로 인코딩을 **확정**했습니다.
+
+- 이 센서가 실제로 전송하는 raw 측정값은 **EchoTime 하나뿐**입니다:
+  `ID=0 EchoTime, Type=RawDigital, DataSize=2` (초음파 왕복 시간, 마이크로초, uint16 LE).
+- **Position/Velocity/Acceleration는 패킷에 없고 호스트가 계산**합니다
+  (`Position: Type=USoundPos, Params=344`, `Velocity: Type=Derivative`).
+- 따라서 위치 변환식:
+  `Position(m) = EchoTime × (speedOfSound 344 ÷ 2) × 1e-6 = EchoTime × 1.72e-4`
+  (÷2 = 왕복). 속력은 앱이 위치 자료로부터 유도합니다(`velocitySource = derived`).
+- 실측 검증: 패킷 `c0 00 05 41 04 …` → EchoTime 0x0441=1089 → 0.187 m(≈20 cm 출발),
+  `c0 00 05 3f 0a …` → 2623 → 0.451 m. (예전에 52 cm로 고정됐던 건 GRSP 헤더
+  `c0 00 05 3f`를 float로 오독한 버그였고 제거함.)
+- 응답 특성: 서비스 0의 `4a5c0000-0003`에 `c0 00 05 <echoLo echoHi>` 형태로 옴.
+  one-shot 명령 `[0x05, 2]`(EchoTime 2바이트)로 폴링. 관련 코드:
+  `pascoPacketDecoder.ts:decodeMotionPacket`, `pascoProtocol.ts:MOTION_CHANNEL_LAYOUT`.
+
+> 남은 보정 포인트: `1.72e-4` 배율은 speedOfSound=344와 EchoTime=µs 가정에 기반합니다
+> (실측 20 cm 지점과 일치). 절대 거리 정밀도가 필요하면 알려진 거리 1점으로 배율을 보정하면
+> 되고, 그래프의 모양(직선/수평)과 상대 비교는 배율과 무관하게 정확합니다.
+
+### 미확보 정보(과거 기록) — Fallback 적용
 PS-3219의 **정확한 채널/측정 바이트 레이아웃**(측정 순서·ID·DataSize·단위)은 공식 라이브러리가
 기기별 **내장 XML 데이터시트**(`datasheets.py`)에서 읽어옵니다. 이 데이터시트의 Motion 항목을
 이 환경에서 확보하지 못했습니다. 따라서:

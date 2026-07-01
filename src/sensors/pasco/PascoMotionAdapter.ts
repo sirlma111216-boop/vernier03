@@ -34,8 +34,12 @@ import {
   parsePascoName,
 } from "./pascoBluetoothConstants";
 import { DiagnosticsCollector } from "./pascoDiagnostics";
-import { bytesToHex, decodeUintLE, scanMotionFromRaw } from "./pascoPacketDecoder";
-import { MOTION_CHANNEL_LAYOUT, buildReadOneSampleCommand } from "./pascoProtocol";
+import { bytesToHex, decodeMotionPacket } from "./pascoPacketDecoder";
+import {
+  MOTION_CHANNEL_LAYOUT,
+  MOTION_DERIVED_MEASUREMENTS,
+  buildReadOneSampleCommand,
+} from "./pascoProtocol";
 
 const CONNECT_TIMEOUT_MS = 15000;
 const FIRST_SAMPLE_TIMEOUT_MS = 10000;
@@ -71,7 +75,7 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
   }
 
   getAvailableMeasurements(): string[] {
-    return MOTION_CHANNEL_LAYOUT.measurements.map((m) => m.name);
+    return [...MOTION_DERIVED_MEASUREMENTS];
   }
 
   getDiagnostics(): MotionSensorDiagnostics {
@@ -136,10 +140,11 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
       }
 
       this.diag.setState("측정 항목 확인 중");
+      // Wire format = EchoTime(2B); Position/Velocity are derived on the host.
       this.diag.setMeasurements(
         [MOTION_CHANNEL_LAYOUT.channelName],
-        MOTION_CHANNEL_LAYOUT.measurements.map((m) => m.name),
-        MOTION_CHANNEL_LAYOUT.measurements.map((m) => m.unit),
+        ["EchoTime(raw)", ...MOTION_DERIVED_MEASUREMENTS],
+        ["µs", "m", "m/s"],
       );
 
       for (const recv of this.recvChars) {
@@ -253,7 +258,7 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
         data = this.lastRaw;
       }
       if (data) {
-        const pos = scanMotionFromRaw(data)?.positionM ?? null;
+        const pos = decodeMotionPacket(data)?.positionM ?? null;
         if (pos !== null && isPlausiblePositionM(pos)) return pos;
       }
     }
@@ -303,22 +308,16 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
     this.lastRaw = data;
     this.diag.recordCharPacket(char.uuid, bytesToHex(data));
 
-    const scanned = scanMotionFromRaw(data);
-    const position = scanned ? scanned.positionM : null;
-    // Integer candidates from the header-stripped payload (in case position is
-    // RawDigital, not a float) — helps calibrate the true scale from hardware.
-    const payloadStart = data.length >= 3 && data[0] === 0xc0 ? 3 : 0;
-    const intCandidate =
-      payloadStart + 4 <= data.length ? decodeUintLE(data, payloadStart, 4) : null;
+    const decoded = decodeMotionPacket(data);
+    const position = decoded ? decoded.positionM : null;
     this.diag.recordSample(
       position,
-      scanned?.velocityCandidateMps ?? null,
+      null, // velocity is host-derived, never sent by the sensor
       data,
       {
+        EchoTimeRaw: decoded ? decoded.echoTimeRaw : null,
         Position: position,
-        VelocityCandidate: scanned?.velocityCandidateMps ?? null,
-        byteOffset: scanned ? scanned.positionOffset : -1,
-        payloadIntCandidate: intCandidate,
+        payloadOffset: decoded ? decoded.payloadOffset : -1,
       },
       "derived",
       `${char.uuid.slice(0, 13)} · ${bytesToHex(data)}`,
@@ -341,15 +340,14 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
   async readPosition(): Promise<number> {
     await this.sendOneShotNudge();
     const data = await this.waitNextPacket(2000);
-    const pos = scanMotionFromRaw(data)?.positionM ?? null;
+    const pos = decodeMotionPacket(data)?.positionM ?? null;
     if (pos === null) throw new Error("위치 자료를 해석하지 못했습니다.");
     return pos;
   }
 
+  /** Velocity is derived from position on the host, so the sensor never reports it. */
   async readVelocity(): Promise<number | null> {
-    await this.sendOneShotNudge();
-    const data = await this.waitNextPacket(2000);
-    return scanMotionFromRaw(data)?.velocityCandidateMps ?? null;
+    return null;
   }
 
   async startStreaming(options: MotionStreamingOptions): Promise<void> {

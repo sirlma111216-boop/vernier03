@@ -9,16 +9,14 @@ import {
   SEND_CMD_CHAR_UUID,
 } from "./pascoBluetoothConstants";
 import {
+  ECHO_TIME_TO_METERS,
   decodeChannelPayload,
   decodeFloat32LE,
+  decodeMotionPacket,
   parseNotification,
-  scanMotionFromRaw,
 } from "./pascoPacketDecoder";
-import {
-  MOTION_CHANNEL_LAYOUT,
-  buildReadOneSampleCommand,
-  pickMeasurement,
-} from "./pascoProtocol";
+import { MOTION_CHANNEL_LAYOUT, buildReadOneSampleCommand } from "./pascoProtocol";
+import type { PascoChannelLayout } from "./pascoTypes";
 
 // Helper: build a 4-byte LE float buffer.
 function floatLE(value: number): number[] {
@@ -80,67 +78,77 @@ describe("one-shot read command", () => {
   it("builds [0x05, packetSize] from the channel layout", () => {
     const cmd = buildReadOneSampleCommand(MOTION_CHANNEL_LAYOUT);
     expect(cmd[0]).toBe(0x05);
-    expect(cmd[1]).toBe(8); // Position(4) + Velocity(4)
+    expect(cmd[1]).toBe(2); // EchoTime is a single 2-byte RawDigital measurement
   });
 });
 
-describe("valid position/velocity packet decoding", () => {
-  it("decodes a GRSP_RESULT one-shot response into position and velocity", () => {
-    const positionM = 0.523;
-    const velocityMps = 0.184;
-    const payload = [...floatLE(positionM), ...floatLE(velocityMps)];
-    const packet = new Uint8Array([0xc0, 0x00, 0x05, ...payload]);
-
-    const parsed = parseNotification(packet);
-    expect(parsed.ok).toBe(true);
-    expect(parsed.payload).not.toBeNull();
-
-    const decoded = decodeChannelPayload(parsed.payload!, MOTION_CHANNEL_LAYOUT);
-    expect(pickMeasurement(decoded, "Position")).toBeCloseTo(positionM, 4);
-    expect(pickMeasurement(decoded, "Velocity")).toBeCloseTo(velocityMps, 4);
+describe("generic channel payload decoding", () => {
+  it("decodes an ordered Direct (float) channel payload by measurement spec", () => {
+    const layout: PascoChannelLayout = {
+      channelName: "Test",
+      measurements: [
+        { name: "A", dataSize: 4, type: "Direct", unit: "m" },
+        { name: "B", dataSize: 4, type: "Direct", unit: "m/s" },
+      ],
+    };
+    const payload = new Uint8Array([...floatLE(0.523), ...floatLE(0.184)]);
+    const decoded = decodeChannelPayload(payload, layout);
+    expect(decoded[0].value).toBeCloseTo(0.523, 4);
+    expect(decoded[1].value).toBeCloseTo(0.184, 4);
   });
 
   it("decodes raw little-endian float bytes", () => {
     expect(decodeFloat32LE(new Uint8Array(floatLE(1.5)), 0)).toBeCloseTo(1.5, 6);
   });
+
+  it("strips the GRSP header from a one-shot response", () => {
+    const packet = new Uint8Array([0xc0, 0x00, 0x05, 0x41, 0x04]);
+    const parsed = parseNotification(packet);
+    expect(parsed.ok).toBe(true);
+    expect(Array.from(parsed.payload!)).toEqual([0x41, 0x04]);
+  });
 });
 
-describe("layout-robust position scan (unknown PS-3219 layout)", () => {
-  it("finds position in a one-shot GRSP_RESULT packet (payload at byte 3)", () => {
-    const packet = new Uint8Array([0xc0, 0x00, 0x05, ...floatLE(0.823), ...floatLE(0.0)]);
-    const scanned = scanMotionFromRaw(packet);
-    expect(scanned).not.toBeNull();
-    expect(scanned!.positionM).toBeCloseTo(0.823, 4);
-    expect(scanned!.positionOffset).toBe(3);
-  });
-
-  it("finds position in a periodic packet (payload at byte 1)", () => {
-    const packet = new Uint8Array([0x07, ...floatLE(1.42), ...floatLE(0.0)]);
-    const scanned = scanMotionFromRaw(packet);
-    expect(scanned!.positionM).toBeCloseTo(1.42, 4);
-    expect(scanned!.positionOffset).toBe(1);
-  });
-
-  it("skips a near-zero leading field (velocity/accel at rest) and finds position after it", () => {
-    // [counter, velocity≈0, position=0.55]
-    const packet = new Uint8Array([0x03, ...floatLE(0.0), ...floatLE(0.55)]);
-    const scanned = scanMotionFromRaw(packet);
-    expect(scanned!.positionM).toBeCloseTo(0.55, 4);
-  });
-
-  it("returns null when no plausible position is present", () => {
-    const packet = new Uint8Array([0xc0, 0x00, 0x05, ...floatLE(99), ...floatLE(0)]);
-    expect(scanMotionFromRaw(packet)).toBeNull();
-  });
-
-  it("does NOT mis-read the GRSP header bytes as a position (real PS-3219 packet)", () => {
-    // Captured from a real PS-3219 on char 4a5c0000-0003. The bytes c0 00 05 3f
-    // interpreted as a float ≈ 0.52 m — a false positive we must reject by
-    // skipping the 3-byte GRSP header before scanning the payload.
+describe("EchoTime→Position decode (real PS-3219 packets)", () => {
+  it("decodes EchoTime (uint16 LE after GRSP header) into a distance", () => {
+    // Real packet: c0 00 05 3f 0a … → EchoTime 0x0a3f = 2623 → ~0.451 m.
     const packet = new Uint8Array([
       0xc0, 0x00, 0x05, 0x3f, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ]);
-    expect(scanMotionFromRaw(packet)).toBeNull();
+    const d = decodeMotionPacket(packet);
+    expect(d).not.toBeNull();
+    expect(d!.echoTimeRaw).toBe(2623);
+    expect(d!.positionM).toBeCloseTo(2623 * ECHO_TIME_TO_METERS, 6);
+    expect(d!.positionM).toBeCloseTo(0.451, 2);
+    expect(d!.payloadOffset).toBe(3);
+  });
+
+  it("decodes the ~20 cm start reading (echo 1089 → 0.187 m)", () => {
+    // Real packet from the moving capture: c0 00 05 41 04 … → 0x0441 = 1089.
+    const packet = new Uint8Array([0xc0, 0x00, 0x05, 0x41, 0x04, 0x00, 0x20]);
+    const d = decodeMotionPacket(packet);
+    expect(d!.echoTimeRaw).toBe(1089);
+    expect(d!.positionM).toBeCloseTo(0.187, 2);
+  });
+
+  it("does NOT mis-read the GRSP header bytes as a float position", () => {
+    // The old float scanner wrongly read c0 00 05 3f ≈ 0.52 m; EchoTime decode
+    // skips the 3-byte header and reads the real payload instead.
+    const packet = new Uint8Array([
+      0xc0, 0x00, 0x05, 0x3f, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+    expect(decodeMotionPacket(packet)!.positionM).toBeLessThan(0.5);
+  });
+
+  it("rejects an out-of-range echo (implausible distance)", () => {
+    // echo 0xFFFF = 65535 → ~11.3 m, beyond the 8.5 m ceiling.
+    const packet = new Uint8Array([0xc0, 0x00, 0x05, 0xff, 0xff]);
+    expect(decodeMotionPacket(packet)).toBeNull();
+  });
+
+  it("reads a raw stream (no GRSP header) from offset 0", () => {
+    const packet = new Uint8Array([0x41, 0x04]); // echo 1089
+    expect(decodeMotionPacket(packet)!.echoTimeRaw).toBe(1089);
   });
 });
 
