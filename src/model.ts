@@ -39,7 +39,6 @@ export interface TrialData {
   index: 1 | 2;
   isDemo: boolean;
   label: string; // "1차 측정"
-  requestedProfile?: "slow" | "fast";
   samples: MotionSample[];
   timeDistanceTable: TimeDistanceRow[];
   intervalTable: IntervalRow[];
@@ -66,7 +65,6 @@ export interface AppModel {
   comparison: TrialComparison | null;
   analysisAnswers: AnalysisAnswers;
   studentConclusion: string;
-  revisedConclusion: string;
   feedback: GeminiFeedback | null;
   measurementSettings: MeasurementSettings;
 }
@@ -104,7 +102,6 @@ export function createEmptyModel(): AppModel {
     comparison: null,
     analysisAnswers: { q1: "", q2: "", q3: "", q4: "", q5: "", q6: "" },
     studentConclusion: "",
-    revisedConclusion: "",
     feedback: null,
     measurementSettings: { ...DEFAULT_SETTINGS },
   };

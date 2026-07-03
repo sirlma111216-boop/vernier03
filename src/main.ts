@@ -535,7 +535,7 @@ function renderMeasure(): void {
   });
 }
 
-function finalizeTrial(partial: Omit<TrialData, "index" | "label" | "requestedProfile">, settings: MeasurementSettings): void {
+function finalizeTrial(partial: Omit<TrialData, "index" | "label">, settings: MeasurementSettings): void {
   const index = (model.trials.length === 0 ? 1 : 2) as 1 | 2;
   const trial: TrialData = { ...partial, index, label: `${index}차 측정` };
   if (model.trials.length >= 2) model.trials = [model.trials[0]]; // replace 2nd on redo

@@ -154,7 +154,7 @@ export function buildReportHtml(model: AppModel, chartImages: { distance: string
     ${feedbackHtml}
 
     <section class="rp-section"><h2>8. 나의 결론</h2>
-      <p>${esc(model.revisedConclusion || model.studentConclusion) || "—"}</p></section>
+      <p>${esc(model.studentConclusion) || "—"}</p></section>
 
     <section class="rp-section"><h2>9. 오차 원인과 개선 방법</h2>
       <p>${esc(a.q6) || "센서 잡음, 바닥의 평탄도, 바퀴의 마찰, 자동차 속력의 변화, 초음파 경로의 장애물 등이 오차의 원인이 될 수 있다."}</p></section>

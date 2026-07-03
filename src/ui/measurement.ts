@@ -39,7 +39,7 @@ export interface MeasurementEvents {
     rawPositionM: number;
   }) => void;
   onReverse?: () => void;
-  onComplete?: (trial: Omit<TrialData, "index" | "label" | "requestedProfile">) => void;
+  onComplete?: (trial: Omit<TrialData, "index" | "label">) => void;
   onError?: (message: string) => void;
 }
 
@@ -185,11 +185,6 @@ export class MeasurementController {
     this.rawDuringMotion = s ? [s] : [];
     this.setPhase("recording", "측정 중…");
     this.scheduleStop();
-  }
-
-  /** Whether the run is currently waiting for the car to start moving. */
-  isWaitingForMotion(): boolean {
-    return this.phase === "waiting-motion";
   }
 
   /** Manual stop — usable at any time. */
