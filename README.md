@@ -28,7 +28,21 @@ npm run build    # tsc --noEmit && vite build  → dist/
 
 - 빌드 명령: `npm run build`, 출력 디렉터리: `dist`
 - Functions: `functions/` (자동 인식)
-- 시크릿: `wrangler pages secret put GEMINI_API_KEY` (선택: `GEMINI_MODEL`, 기본 `gemini-1.5-flash`)
+
+### AI 피드백 설정 — Vertex AI 권장
+
+Cloudflare 엣지에서 `generativelanguage.googleapis.com`(AI Studio)를 호출하면 나가는 IP가
+지원되지 않는 지역(예: 홍콩)을 경유해 간헐적으로 `400 User location is not supported`가 납니다.
+그래서 프로덕션은 위치 검사가 없는 **Vertex AI**를 사용합니다.
+
+- 프로덕션 시크릿: `wrangler pages secret put GCP_SERVICE_ACCOUNT`
+  - 값 = GCP 서비스 계정 키(JSON) **파일 내용 전체**
+  - GCP 설정: aiplatform.googleapis.com 사용 설정 → 서비스 계정 생성 → 역할 `roles/aiplatform.user` → JSON 키 발급
+- 로컬 개발 대체(지원 지역 고정 IP에서만): `wrangler pages secret put GEMINI_API_KEY`
+- 모델(선택): `GEMINI_MODEL` (기본 `gemini-2.5-flash`; 404면 `gemini-2.5-flash-lite`)
+
+`GCP_SERVICE_ACCOUNT`가 있으면 Vertex, 없으면 `GEMINI_API_KEY`로 AI Studio를 사용합니다.
+Cloudflare 대시보드에서는 **Settings → Variables and Secrets(런타임)** 에 **Secret 타입**으로 등록하세요.
 
 ## 문서
 
