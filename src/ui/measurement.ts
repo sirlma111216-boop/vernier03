@@ -64,16 +64,21 @@ export class MeasurementController {
     private isDemo: boolean,
   ) {}
 
-  /** Begin the full sequence: countdown → baseline → wait → record. */
+  /**
+   * Begin the full sequence: countdown → baseline → wait → record.
+   * The adapter stream is owned by the caller (it stays alive for the whole
+   * measurement step); this controller only subscribes to and reads from it.
+   */
   async start(): Promise<void> {
     this.reset();
     this.aborted = false;
+    // Make sure the stream is running at the configured rate before recording.
+    await this.adapter.startStreaming({ sampleRateHz: this.settings.sampleRateHz });
     await this.runCountdown(3);
     if (this.aborted) return;
 
     this.setPhase("baseline", "출발 위치를 확인하고 있어요…");
     this.unsubscribe = this.adapter.onSample((s) => this.handleRaw(s));
-    await this.adapter.startStreaming({ sampleRateHz: this.settings.sampleRateHz });
   }
 
   private async runCountdown(seconds: number): Promise<void> {
@@ -171,22 +176,6 @@ export class MeasurementController {
     }, this.settings.durationS * 1000);
   }
 
-  /**
-   * Manually begin recording immediately (the "측정 시작" button), bypassing
-   * automatic motion detection. Usable once the starting position is known.
-   */
-  forceStart(): void {
-    if (this.phase !== "baseline" && this.phase !== "waiting-motion") return;
-    if (this.baselineSamples.length > 0) {
-      this.initialPositionM = median(this.baselineSamples);
-    }
-    const s = this.prevSample;
-    this.startTimeMs = s ? s.timestampMs : performance.now();
-    this.rawDuringMotion = s ? [s] : [];
-    this.setPhase("recording", "측정 중…");
-    this.scheduleStop();
-  }
-
   /** Manual stop — usable at any time. */
   async stop(): Promise<void> {
     if (this.phase === "recording") {
@@ -198,7 +187,9 @@ export class MeasurementController {
 
   private async finish(): Promise<void> {
     if (this.phase === "done") return;
-    await this.teardownStream();
+    // Stop the recording window only — the adapter keeps streaming so the
+    // sensor stays alive and a "다시 측정" can start again immediately.
+    this.stopRecording();
 
     const built = buildMotionSamples(this.rawDuringMotion, this.initialPositionM, this.startTimeMs, {
       direction: this.settings.direction,
@@ -229,11 +220,16 @@ export class MeasurementController {
 
   async abort(): Promise<void> {
     this.aborted = true;
-    await this.teardownStream();
+    this.stopRecording();
     this.setPhase("idle", "측정을 멈췄어요");
   }
 
-  private async teardownStream(): Promise<void> {
+  /**
+   * Stops the recording window (unsubscribe + timers) WITHOUT stopping the
+   * adapter stream. The stream's lifecycle is owned by the measurement step so
+   * the sensor is not disconnected between recordings.
+   */
+  private stopRecording(): void {
     this.unsubscribe?.();
     this.unsubscribe = null;
     if (this.recordingStopTimer) {
@@ -242,11 +238,6 @@ export class MeasurementController {
     }
     this.timers.forEach(clearTimeout);
     this.timers = [];
-    try {
-      await this.adapter.stopStreaming();
-    } catch {
-      /* ignore */
-    }
   }
 
   reset(): void {

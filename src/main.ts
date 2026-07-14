@@ -42,6 +42,10 @@ let isDemoAdapter = false;
 let connected = false;
 let charts: MotionCharts | null = null;
 let measurement: MeasurementController | null = null;
+// Unsubscribe for the step-3 "keep the sensor alive" live stream. The stream is
+// owned by the measurement step, not the recording controller, so the sensor
+// never goes silent (and never idle-disconnects) between recordings.
+let measureStreamOff: (() => void) | null = null;
 let currentStep = 0;
 let maxStep = 0;
 let checklistDone = false;
@@ -74,9 +78,14 @@ function renderStepper(): void {
 
 function goTo(step: number): void {
   if (step === currentStep) return;
-  // Clean up charts/measurement when leaving the measurement step.
+  // Clean up charts/measurement when leaving the measurement step. Only here do
+  // we stop the sensor stream — while on step 3 it stays alive so the sensor is
+  // never disconnected between recordings.
   if (currentStep === 3 && step !== 3) {
     measurement?.abort();
+    measureStreamOff?.();
+    measureStreamOff = null;
+    void adapter?.stopStreaming();
     charts?.destroy();
     charts = null;
   }
@@ -439,13 +448,11 @@ function renderMeasure(): void {
   // controls
   const ctl = el("div", { class: "btn-row" });
   const prepBtn = el("button", { class: "btn btn-primary", textContent: "측정 준비" });
-  const startBtn = el("button", { class: "btn btn-primary", textContent: "측정 시작" });
   const stopBtn = el("button", { class: "btn btn-orange", textContent: "측정 중지" });
   const redoBtn = el("button", { class: "btn btn-ghost", textContent: "다시 측정" });
   const clearBtn = el("button", { class: "btn btn-neutral", textContent: "측정값 초기화" });
-  startBtn.disabled = true;
   stopBtn.disabled = true;
-  ctl.append(prepBtn, startBtn, stopBtn, redoBtn, clearBtn);
+  ctl.append(prepBtn, stopBtn, redoBtn, clearBtn);
   card.append(ctl);
 
   const resultHost = el("div", { id: "measureResult" });
@@ -462,6 +469,19 @@ function renderMeasure(): void {
   model.trials.forEach((t, i) => charts!.setTrial(i, t.label, t.samples));
 
   const settings = model.measurementSettings;
+
+  // Keep a real sensor streaming for the whole step so it stays powered and
+  // aimed (and never idle-disconnects) between recordings. The live "현재 센서
+  // 거리" card updates continuously, proving the sensor is connected. The demo
+  // adapter is driven per-recording by the controller instead.
+  measureStreamOff?.();
+  measureStreamOff = null;
+  if (!isDemoAdapter && adapter.isConnected()) {
+    adapter.startStreaming({ sampleRateHz: settings.sampleRateHz }).catch(() => {});
+    measureStreamOff = adapter.onSample((raw) => {
+      setText("mRaw", fmt(raw.rawPositionM * 100, 1));
+    });
+  }
   const setPhase = (phase: MeasurementPhase, message: string) => {
     const t = qs("#phaseText"); if (t) t.textContent = message;
     const wrap = qs("#phaseWrap .state-pill");
@@ -469,8 +489,6 @@ function renderMeasure(): void {
       wrap.className = "state-pill " + (phase === "recording" || phase === "baseline" || phase === "waiting-motion" || phase === "countdown" ? "busy" : phase === "done" ? "ok" : phase === "error" ? "err" : "idle");
     }
     const cd = qs("#countdown"); if (cd && phase !== "countdown") cd.style.display = "none";
-    // "측정 시작" is available only while waiting for the car to start moving.
-    startBtn.disabled = phase !== "waiting-motion";
     if (phase === "done" || phase === "error" || phase === "idle") {
       prepBtn.disabled = false;
       stopBtn.disabled = true;
@@ -485,7 +503,6 @@ function renderMeasure(): void {
     model.trials.forEach((t, i) => charts!.setTrial(i, t.label, t.samples));
     qs("#measureResult")!.replaceChildren();
     prepBtn.disabled = true;
-    startBtn.disabled = true;
     stopBtn.disabled = false;
 
     measurement = new MeasurementController(adapter, settings, {
@@ -523,7 +540,6 @@ function renderMeasure(): void {
   };
 
   prepBtn.addEventListener("click", startMeasurement);
-  startBtn.addEventListener("click", () => { measurement?.forceStart(); });
   stopBtn.addEventListener("click", () => { void measurement?.stop(); });
   redoBtn.addEventListener("click", startMeasurement);
   clearBtn.addEventListener("click", () => {
