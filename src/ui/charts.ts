@@ -23,12 +23,14 @@ Chart.register(
 
 const TRIAL_COLORS = ["#0E9E94", "#F4623A"];
 
-function baseConfig(yLabel: string, xLabel: string): ChartConfiguration<"line"> {
+function baseConfig(yLabel: string, xLabel: string, responsive = true): ChartConfiguration<"line"> {
   return {
     type: "line",
     data: { datasets: [] },
     options: {
-      responsive: true,
+      // Responsive on-screen; fixed-size (uses the canvas width/height attributes)
+      // for offscreen report capture so the image never stretches vertically.
+      responsive,
       maintainAspectRatio: false,
       animation: false,
       interaction: { mode: "nearest", intersect: false },
@@ -57,9 +59,14 @@ export class MotionCharts {
   private distance: Chart<"line">;
   private speed: Chart<"line">;
 
-  constructor(distanceCanvas: HTMLCanvasElement, speedCanvas: HTMLCanvasElement) {
-    this.distance = new Chart(distanceCanvas, baseConfig("이동 거리(cm)", "시간(s)"));
-    this.speed = new Chart(speedCanvas, baseConfig("속력(cm/s)", "시간(s)"));
+  constructor(
+    distanceCanvas: HTMLCanvasElement,
+    speedCanvas: HTMLCanvasElement,
+    opts: { responsive?: boolean } = {},
+  ) {
+    const responsive = opts.responsive ?? true;
+    this.distance = new Chart(distanceCanvas, baseConfig("이동 거리(cm)", "시간(s)", responsive));
+    this.speed = new Chart(speedCanvas, baseConfig("속력(cm/s)", "시간(s)", responsive));
   }
 
   /** Replace one trial's data (index 0 or 1) on both charts. */

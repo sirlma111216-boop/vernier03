@@ -935,7 +935,9 @@ async function renderChartImages(): Promise<{ distance: string; speed: string }[
     const host = el("div", { style: "position:fixed;left:-9999px;top:0;width:520px" });
     host.append(dist, speed);
     document.body.append(host);
-    const c = new MotionCharts(dist, speed);
+    // Fixed-size (non-responsive) so the captured PNG keeps the 520x320 aspect
+    // ratio instead of stretching to the unbounded offscreen container height.
+    const c = new MotionCharts(dist, speed, { responsive: false });
     c.setTrial(0, trial.label, trial.samples);
     // Chart.js renders synchronously (animation:false); a short tick is enough.
     await new Promise((r) => setTimeout(r, 40));
