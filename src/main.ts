@@ -497,6 +497,9 @@ function renderMeasure(): void {
 
   const startMeasurement = () => {
     if (!adapter) return;
+    // Deactivate any prior/in-flight controller first so an orphaned one can't
+    // keep listening to the live stream and start a phantom recording.
+    measurement?.dispose();
     // Prior trials keep their own dataset slots; the live stream gets the next one.
     const liveIndex = model.trials.length;
     charts!.resetLive();

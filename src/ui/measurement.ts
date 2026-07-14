@@ -219,9 +219,19 @@ export class MeasurementController {
   }
 
   async abort(): Promise<void> {
+    this.dispose();
+    this.setPhase("idle", "측정을 멈췄어요");
+  }
+
+  /**
+   * Permanently deactivates this controller without touching the UI: unsubscribe
+   * from the sensor stream, cancel timers, and refuse any further phase changes.
+   * Used when a new measurement supersedes an in-flight one, so an orphaned
+   * controller can never fire a phantom recording once the car starts moving.
+   */
+  dispose(): void {
     this.aborted = true;
     this.stopRecording();
-    this.setPhase("idle", "측정을 멈췄어요");
   }
 
   /**
