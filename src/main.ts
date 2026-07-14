@@ -3,7 +3,7 @@
  * 7개 단계(0~6)를 하나의 페이지에서 렌더링하고 상태를 관리한다.
  */
 import "./styles.css";
-import { el, clear, qs, fmt } from "./ui/dom";
+import { el, clear, qs, fmt, escapeHtml } from "./ui/dom";
 import { setupIllustrationSVG, predictionGraphSVG } from "./ui/illustration";
 import { MotionCharts } from "./ui/charts";
 import { MeasurementController, type MeasurementPhase } from "./ui/measurement";
@@ -16,7 +16,7 @@ import {
   type TrialData,
   type MeasurementSettings,
 } from "./model";
-import type { MotionSensorAdapter, MotionSample } from "./sensors/types";
+import type { MotionSensorAdapter } from "./sensors/types";
 import { PascoMotionAdapter } from "./sensors/pasco/PascoMotionAdapter";
 import { DemoMotionAdapter, type DemoSpeedProfile } from "./sensors/demo/DemoMotionAdapter";
 import { compareTrials } from "./sensors/motion/motionAnalysis";
@@ -161,7 +161,7 @@ function renderPredict(): void {
   // Q2 graph cards
   card.append(el("h3", { textContent: "예상 2. 시간–이동 거리 그래프는 어떤 모양에 가까울까요?" }));
   card.append(
-    graphChoices("q2", [
+    graphChoices([
       { key: "rising-straight", svg: "rising-straight", label: "오른쪽 위로 기울어진 직선" },
       { key: "curve-up", svg: "curve-up", label: "위로 굽은 곡선" },
       { key: "horizontal", svg: "horizontal", label: "수평선" },
@@ -171,7 +171,7 @@ function renderPredict(): void {
   // Q3 graph cards
   card.append(el("h3", { textContent: "예상 3. 시간–속력 그래프는 어떤 모양에 가까울까요?" }));
   card.append(
-    graphChoices("q3", [
+    graphChoices([
       { key: "horizontal-positive", svg: "horizontal-positive", label: "0보다 큰 값에서 수평인 선" },
       { key: "rising", svg: "rising", label: "시간이 지날수록 높아지는 선" },
       { key: "falling", svg: "falling", label: "시간이 지날수록 낮아지는 선" },
@@ -289,7 +289,7 @@ function renderConnect(): void {
   const disconnectBtn = el("button", { class: "btn btn-ghost", textContent: "연결 해제" });
   const demoBtn = el("button", { class: "btn btn-neutral", textContent: "센서 없이 시연하기" });
   disconnectBtn.disabled = !connected;
-  connectBtn.disabled = !PascoMotionAdapter.isSupported() || !PascoMotionAdapter.isSecureContext();
+  connectBtn.disabled = !PascoMotionAdapter.isSupported() || !PascoMotionAdapter.isSecureContext() || connected;
   btnRow.append(connectBtn, disconnectBtn, demoBtn);
   card.append(btnRow);
 
@@ -372,6 +372,8 @@ function renderConnect(): void {
   });
 
   demoBtn.addEventListener("click", async () => {
+    // Release any live sensor connection so it doesn't keep streaming in the background.
+    await adapter?.disconnect();
     const demo = new DemoMotionAdapter({ profile: "slow" });
     await demo.connect();
     adapter = demo;
@@ -390,7 +392,6 @@ function enableNextButton(nav: HTMLElement): void {
 }
 
 // ---- STEP 3: 운동 측정 ----
-let liveSampleBuffer: MotionSample[] = [];
 function renderMeasure(): void {
   const card = el("div", { class: "card" });
   card.append(
@@ -478,9 +479,10 @@ function renderMeasure(): void {
 
   const startMeasurement = () => {
     if (!adapter) return;
-    liveSampleBuffer = [];
+    // Prior trials keep their own dataset slots; the live stream gets the next one.
+    const liveIndex = model.trials.length;
     charts!.resetLive();
-    model.trials.forEach((t, i) => charts!.setTrial(i + 1, t.label, t.samples)); // keep prior trials visible offset
+    model.trials.forEach((t, i) => charts!.setTrial(i, t.label, t.samples));
     qs("#measureResult")!.replaceChildren();
     prepBtn.disabled = true;
     startBtn.disabled = true;
@@ -493,8 +495,7 @@ function renderMeasure(): void {
         if (cd) { cd.style.display = "block"; cd.textContent = String(n); }
       },
       onLiveSample: (s) => {
-        liveSampleBuffer.push(s);
-        charts!.pushLivePoint(s);
+        charts!.pushLivePoint(liveIndex, s);
       },
       onLiveStats: (st) => {
         setText("mElapsed", fmt(st.elapsedS, 1));
@@ -877,7 +878,6 @@ function radioChoices(
 }
 
 function graphChoices(
-  name: string,
   options: { key: string; svg: string; label: string }[],
   selected: string,
   onChange: (v: string) => void,
@@ -893,7 +893,6 @@ function graphChoices(
     });
     wrap.append(div);
   });
-  void name;
   return wrap;
 }
 
@@ -921,10 +920,6 @@ function setText(id: string, text: string): void {
 function disableNext(nav: HTMLElement): void {
   const btn = nav.querySelector(".btn-primary") as HTMLButtonElement | null;
   if (btn) btn.disabled = true;
-}
-
-function escapeHtml(s: string): string {
-  return (s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] as string);
 }
 
 // ---- teacher settings panel (collapsed) ----

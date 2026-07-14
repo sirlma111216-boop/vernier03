@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildMotionSamples,
-  detectMotionStartIndex,
   detectsDirectionChange,
   isPlausiblePositionM,
-  meterToCm,
   movementDistanceCm,
   mpsToCmps,
   speedFromVelocityMps,
@@ -12,11 +10,6 @@ import {
 import type { RawMotionSample } from "../types";
 
 describe("unit conversions", () => {
-  it("converts meters to centimeters", () => {
-    expect(meterToCm(0.5)).toBe(50);
-    expect(meterToCm(1.23)).toBeCloseTo(123, 6);
-  });
-
   it("converts m/s to cm/s", () => {
     expect(mpsToCmps(0.2)).toBeCloseTo(20, 6);
   });
@@ -59,18 +52,6 @@ describe("direction-change detection", () => {
 
   it("returns true when motion reverses beyond noise tolerance", () => {
     expect(detectsDirectionChange([0, 10, 20, 8, 2])).toBe(true);
-  });
-});
-
-describe("motion-start detection", () => {
-  it("ignores a single noisy sample and requires consecutive over-threshold speeds", () => {
-    const speeds = [0, 1, 9, 0.5, 0.4, 5, 6, 7, 8];
-    // The single spike at index 2 must NOT trigger; sustained motion starts at index 5.
-    expect(detectMotionStartIndex(speeds, 4, 3)).toBe(5);
-  });
-
-  it("returns -1 when motion never sustains", () => {
-    expect(detectMotionStartIndex([0, 1, 0, 1, 0], 4, 3)).toBe(-1);
   });
 });
 

@@ -199,7 +199,6 @@ export class MeasurementController {
   private async finish(): Promise<void> {
     if (this.phase === "done") return;
     await this.teardownStream();
-    this.setPhase("done", "측정 완료");
 
     const built = buildMotionSamples(this.rawDuringMotion, this.initialPositionM, this.startTimeMs, {
       direction: this.settings.direction,
@@ -211,6 +210,7 @@ export class MeasurementController {
       this.events.onError?.("측정이 너무 일찍 끝났습니다. 다시 측정해 주세요.");
       return;
     }
+    this.setPhase("done", "측정 완료");
     const maxSecond = Math.floor(samples[samples.length - 1].elapsedTimeS);
     const timeDistanceTable = buildTimeDistanceTable(samples, Math.max(1, maxSecond));
     const intervalTable = buildIntervalTable(timeDistanceTable);

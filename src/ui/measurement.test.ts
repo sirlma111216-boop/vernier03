@@ -27,8 +27,6 @@ class FakeAdapter implements MotionSensorAdapter {
   async disconnect(): Promise<void> {}
   isConnected(): boolean { return true; }
   getAvailableMeasurements(): string[] { return ["Position"]; }
-  async readPosition(): Promise<number> { return 0.3; }
-  async readVelocity(): Promise<number | null> { return null; }
   async startStreaming(): Promise<void> { this.streaming = true; }
   async stopStreaming(): Promise<void> { this.streaming = false; }
   onDisconnect(): () => void { return () => {}; }

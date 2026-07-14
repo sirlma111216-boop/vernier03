@@ -337,22 +337,11 @@ export class PascoMotionAdapter implements MotionSensorAdapter {
     waiters.forEach((fn) => fn(data));
   };
 
-  async readPosition(): Promise<number> {
-    await this.sendOneShotNudge();
-    const data = await this.waitNextPacket(2000);
-    const pos = decodeMotionPacket(data)?.positionM ?? null;
-    if (pos === null) throw new Error("위치 자료를 해석하지 못했습니다.");
-    return pos;
-  }
-
-  /** Velocity is derived from position on the host, so the sensor never reports it. */
-  async readVelocity(): Promise<number | null> {
-    return null;
-  }
-
   async startStreaming(options: MotionStreamingOptions): Promise<void> {
     if (!this.connected) throw new Error("센서가 연결되어 있지 않습니다.");
-    if (this.streaming) return;
+    // Restart the poll timer so a repeated call can change the sampling rate
+    // (step 2 starts a 10 Hz live stream; step 3 re-calls with the teacher's rate).
+    if (this.pollTimer) clearInterval(this.pollTimer);
     this.streaming = true;
     const intervalMs = Math.max(20, Math.round(1000 / options.sampleRateHz));
     this.pollTimer = setInterval(() => {

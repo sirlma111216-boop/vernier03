@@ -14,14 +14,8 @@ import type {
 // Classroom-reliable detection range is roughly 0.15 m – 4 m.
 export const MIN_VALID_POSITION_M = 0.1;
 export const MAX_VALID_POSITION_M = 6.0;
-/** A single-sample jump larger than this (m) between consecutive ~10 Hz samples is implausible. */
-export const MAX_POSITION_JUMP_M = 1.0;
 
 // --- Unit conversions -------------------------------------------------------
-
-export function meterToCm(meters: number): number {
-  return meters * 100;
-}
 
 export function mpsToCmps(mps: number): number {
   return mps * 100;
@@ -40,11 +34,6 @@ export function isPlausiblePositionM(positionM: number): boolean {
     positionM >= MIN_VALID_POSITION_M &&
     positionM <= MAX_VALID_POSITION_M
   );
-}
-
-/** Detects a physically impossible sudden jump between two consecutive positions. */
-export function isPositionJump(prevM: number, nextM: number): boolean {
-  return Math.abs(nextM - prevM) > MAX_POSITION_JUMP_M;
 }
 
 // --- Movement distance normalization ---------------------------------------
@@ -121,43 +110,6 @@ export function medianFilter(values: number[], windowSize = 3): number[] {
     out.push(slice[Math.floor(slice.length / 2)]);
   }
   return out;
-}
-
-/** Short trailing moving average for light display smoothing. */
-export function movingAverage(values: number[], windowSize = 3): number[] {
-  if (windowSize < 2 || values.length === 0) return values.slice();
-  const out: number[] = [];
-  for (let i = 0; i < values.length; i++) {
-    const lo = Math.max(0, i - (windowSize - 1));
-    let sum = 0;
-    for (let j = lo; j <= i; j++) sum += values[j];
-    out.push(sum / (i - lo + 1));
-  }
-  return out;
-}
-
-// --- Motion-start detection -------------------------------------------------
-
-/**
- * Returns the index at which sustained motion begins, or -1 if not found.
- * Requires the instantaneous speed to exceed `thresholdCmps` for
- * `consecutive` samples in a row, so a single noisy sample never triggers.
- */
-export function detectMotionStartIndex(
-  speedsCmps: number[],
-  thresholdCmps = 4,
-  consecutive = 3,
-): number {
-  let run = 0;
-  for (let i = 0; i < speedsCmps.length; i++) {
-    if (speedsCmps[i] >= thresholdCmps) {
-      run++;
-      if (run >= consecutive) return i - consecutive + 1;
-    } else {
-      run = 0;
-    }
-  }
-  return -1;
 }
 
 /** Median of an array (full precision). */

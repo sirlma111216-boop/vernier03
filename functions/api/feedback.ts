@@ -46,8 +46,8 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   // Defense in depth: strip any identity fields that should never reach Gemini.
   const safePayload = stripForbidden(payload);
 
-  const model = env.GEMINI_MODEL ?? "gemini-1.5-flash";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
+  const model = env.GEMINI_MODEL ?? "gemini-2.5-flash";
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
   const prompt = buildPrompt(safePayload);
 
@@ -56,7 +56,8 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   try {
     const res = await fetch(url, {
       method: "POST",
-      headers: JSON_HEADERS,
+      // Key goes in a header, not the URL, so it can never land in request logs.
+      headers: { ...JSON_HEADERS, "x-goog-api-key": env.GEMINI_API_KEY },
       signal: controller.signal,
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text: prompt }] }],

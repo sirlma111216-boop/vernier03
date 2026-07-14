@@ -1,13 +1,8 @@
 /** Builds the printable report HTML from the app model. */
 
 import type { AppModel, TrialData } from "../model";
-import { fmt } from "./dom";
+import { fmt, escapeHtml as esc } from "./dom";
 import { setupIllustrationSVG } from "./illustration";
-
-const esc = (s: string): string =>
-  (s ?? "").replace(/[&<>"]/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] as string,
-  );
 
 const PREDICTION_LABELS: Record<string, Record<string, string>> = {
   q1: {

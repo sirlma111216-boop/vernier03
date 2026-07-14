@@ -26,7 +26,6 @@ export interface DemoOptions {
 export class DemoMotionAdapter implements MotionSensorAdapter {
   private diag = new DiagnosticsCollector(true);
   private connected = false;
-  private streaming = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private startMs = 0;
   private sampleCallbacks = new Set<(s: RawMotionSample) => void>();
@@ -100,17 +99,9 @@ export class DemoMotionAdapter implements MotionSensorAdapter {
     return (Math.random() - 0.5) * 2 * scale;
   }
 
-  async readPosition(): Promise<number> {
-    return this.modelAt(0).positionM + this.noise(this.noiseM);
-  }
-
-  async readVelocity(): Promise<number | null> {
-    return this.modelAt(0).velocityMps;
-  }
-
   async startStreaming(options: MotionStreamingOptions): Promise<void> {
-    if (this.streaming) return;
-    this.streaming = true;
+    // Restart so a repeated call can change the rate (mirrors the real adapter).
+    if (this.timer) clearInterval(this.timer);
     this.startMs = performance.now();
     const intervalMs = Math.max(20, Math.round(1000 / options.sampleRateHz));
     this.timer = setInterval(() => {
@@ -135,7 +126,6 @@ export class DemoMotionAdapter implements MotionSensorAdapter {
   }
 
   async stopStreaming(): Promise<void> {
-    this.streaming = false;
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;

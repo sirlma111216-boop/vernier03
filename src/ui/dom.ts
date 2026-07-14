@@ -44,3 +44,7 @@ export function fmt(n: number | null | undefined, digits = 1): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return "—";
   return n.toFixed(digits);
 }
+
+export function escapeHtml(s: string): string {
+  return (s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] as string);
+}

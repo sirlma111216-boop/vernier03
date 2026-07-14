@@ -87,9 +87,6 @@ export interface MotionSensorAdapter {
 
   getAvailableMeasurements(): string[];
 
-  readPosition(): Promise<number>;
-  readVelocity(): Promise<number | null>;
-
   startStreaming(options: MotionStreamingOptions): Promise<void>;
   stopStreaming(): Promise<void>;
 

@@ -6,7 +6,6 @@ import {
   LineElement,
   PointElement,
   LinearScale,
-  Title,
   Tooltip,
   Legend,
 } from "chart.js";
@@ -18,7 +17,6 @@ Chart.register(
   LineElement,
   PointElement,
   LinearScale,
-  Title,
   Tooltip,
   Legend,
 );
@@ -75,15 +73,16 @@ export class MotionCharts {
     this.speed.update("none");
   }
 
-  /** Live-append a single point to trial 0 (used during recording). */
-  pushLivePoint(sample: MotionSample): void {
-    ensureDataset(this.distance, 0, "측정 중", TRIAL_COLORS[0]);
-    ensureDataset(this.speed, 0, "측정 중", TRIAL_COLORS[0]);
-    (this.distance.data.datasets[0].data as { x: number; y: number }[]).push({
+  /** Live-append a single point to the dataset at `index` (used during recording). */
+  pushLivePoint(index: number, sample: MotionSample): void {
+    const color = TRIAL_COLORS[index % TRIAL_COLORS.length];
+    ensureDataset(this.distance, index, "측정 중", color);
+    ensureDataset(this.speed, index, "측정 중", color);
+    (this.distance.data.datasets[index].data as { x: number; y: number }[]).push({
       x: sample.elapsedTimeS,
       y: sample.movementDistanceCm,
     });
-    (this.speed.data.datasets[0].data as { x: number; y: number }[]).push({
+    (this.speed.data.datasets[index].data as { x: number; y: number }[]).push({
       x: sample.elapsedTimeS,
       y: sample.speedCmps,
     });
@@ -98,13 +97,6 @@ export class MotionCharts {
     this.speed.update("none");
   }
 
-  clearTrial(index: number): void {
-    removeDataset(this.distance, index);
-    removeDataset(this.speed, index);
-    this.distance.update("none");
-    this.speed.update("none");
-  }
-
   destroy(): void {
     this.distance.destroy();
     this.speed.destroy();
@@ -112,16 +104,19 @@ export class MotionCharts {
 }
 
 function ensureDataset(chart: Chart<"line">, index: number, label: string, color: string) {
-  if (!chart.data.datasets[index]) {
-    chart.data.datasets[index] = {
-      label,
-      data: [],
-      borderColor: color,
-      backgroundColor: color,
-      pointRadius: 2,
-      borderWidth: 2.5,
-      tension: 0.15,
-    };
+  // Fill any lower slots too — a sparse datasets array crashes Chart.js updates.
+  for (let i = 0; i <= index; i++) {
+    if (!chart.data.datasets[i]) {
+      chart.data.datasets[i] = {
+        label: i === index ? label : "",
+        data: [],
+        borderColor: i === index ? color : "transparent",
+        backgroundColor: i === index ? color : "transparent",
+        pointRadius: 2,
+        borderWidth: 2.5,
+        tension: 0.15,
+      };
+    }
   }
 }
 
@@ -135,11 +130,4 @@ function upsertDataset(
   ensureDataset(chart, index, label, color);
   chart.data.datasets[index].label = label;
   chart.data.datasets[index].data = data;
-}
-
-function removeDataset(chart: Chart<"line">, index: number) {
-  if (chart.data.datasets[index]) {
-    chart.data.datasets[index].data = [];
-    chart.data.datasets[index].label = "";
-  }
 }
