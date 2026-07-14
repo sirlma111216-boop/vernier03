@@ -41,6 +41,8 @@ let lastPascoAttempt: PascoMotionAdapter | null = null;
 let isDemoAdapter = false;
 let connected = false;
 let charts: MotionCharts | null = null;
+// Read-only charts that replay the measured trials on the analysis step (4).
+let analysisCharts: MotionCharts | null = null;
 let measurement: MeasurementController | null = null;
 // Unsubscribe for the step-3 "keep the sensor alive" live stream. The stream is
 // owned by the measurement step, not the recording controller, so the sensor
@@ -88,6 +90,10 @@ function goTo(step: number): void {
     void adapter?.stopStreaming();
     charts?.destroy();
     charts = null;
+  }
+  if (currentStep === 4 && step !== 4) {
+    analysisCharts?.destroy();
+    analysisCharts = null;
   }
   currentStep = step;
   maxStep = Math.max(maxStep, step);
@@ -666,20 +672,63 @@ function buildTablesUI(trial: TrialData): HTMLElement {
 }
 
 // ---- STEP 4: 자료 분석과 해석 ----
-const ANALYSIS_QUESTIONS: { key: keyof AppModel["analysisAnswers"]; q: string }[] = [
-  { key: "q1", q: "1초 동안 이동한 거리는 각 구간에서 어떠했나요? 측정값을 근거로 설명하세요." },
-  { key: "q2", q: "시간이 지날수록 처음 위치로부터의 이동 거리는 어떻게 변했나요?" },
-  { key: "q3", q: "시간–이동 거리 그래프가 직선에 가까운 까닭은 무엇인가요?" },
-  { key: "q4", q: "시간–이동 거리 그래프의 기울기는 무엇을 뜻하나요?" },
-  { key: "q5", q: "시간–속력 그래프가 수평선에 가까운 까닭은 무엇인가요?" },
-  { key: "q6", q: "그래프가 완벽한 직선이나 수평선이 되지 않은 까닭을 한 가지 이상 써 보세요." },
+type AnalysisItem =
+  | { key: keyof AppModel["analysisAnswers"]; type: "choice"; q: string; options: string[] }
+  | { key: keyof AppModel["analysisAnswers"]; type: "essay"; q: string; hint?: string };
+
+// A mix of quick single-choice observations (low writing load) and short essay
+// questions for the reasoning/error-analysis parts. Choice answers are stored as
+// the selected label text, so the report and AI payload need no special handling.
+const ANALYSIS_ITEMS: AnalysisItem[] = [
+  {
+    key: "q1", type: "choice",
+    q: "표에서 1초마다 이동한 거리를 비교하면 어떤가요?",
+    options: [
+      "매 구간 거의 같은 거리를 이동했다",
+      "시간이 지날수록 점점 더 많이 이동했다",
+      "시간이 지날수록 점점 더 적게 이동했다",
+    ],
+  },
+  {
+    key: "q2", type: "choice",
+    q: "시간–이동 거리 그래프는 어떤 모양인가요?",
+    options: [
+      "오른쪽 위로 곧게 뻗은 직선",
+      "위로 점점 가팔라지는 곡선",
+      "시간축과 나란한 수평선",
+    ],
+  },
+  {
+    key: "q3", type: "choice",
+    q: "시간–이동 거리 그래프의 기울기는 무엇을 나타낼까요?",
+    options: ["물체의 속력", "물체의 위치", "걸린 시간", "물체의 무게"],
+  },
+  {
+    key: "q4", type: "choice",
+    q: "시간–속력 그래프는 어떤 모양인가요?",
+    options: [
+      "0보다 큰 값에서 거의 수평인 선",
+      "시간이 지날수록 높아지는 선",
+      "시간이 지날수록 낮아지는 선",
+    ],
+  },
+  {
+    key: "q5", type: "essay",
+    q: "위 답들을 종합하면, 이 자동차의 운동을 ‘등속 운동’이라고 할 수 있나요? 그래프의 모양과 측정값(기울기·평균 속력)을 근거로 설명해 보세요.",
+    hint: "예: 시간–이동 거리 그래프가 직선이고 기울기(속력)가 거의 일정하므로 …",
+  },
+  {
+    key: "q6", type: "essay",
+    q: "그래프가 완벽한 직선이나 수평선이 되지 않은 까닭을 한 가지 이상 써 보세요.",
+    hint: "센서 잡음, 바닥의 평탄도, 바퀴의 마찰, 출발·정지 구간, 초음파 경로의 장애물 등",
+  },
 ];
 
 function renderAnalyze(): void {
   const card = el("div", { class: "card" });
   card.append(
     el("h2", { textContent: "그래프와 표를 분석해요" }),
-    el("p", { class: "lead", textContent: "측정한 그래프와 표를 보면서 질문에 답해 보세요. 답은 자동으로 저장됩니다." }),
+    el("p", { class: "lead", textContent: "3단계에서 측정한 그래프를 보면서 아래 질문에 답해 보세요. 선택형은 보이는 대로 고르고, 서술형은 근거를 들어 짧게 써 보세요. 답은 자동으로 저장됩니다." }),
   );
 
   if (model.trials.length === 0) {
@@ -693,11 +742,32 @@ function renderAnalyze(): void {
   card.append(el("div", { class: "subcard", html:
     `<b>${t0.label} 요약</b> · 기울기(속력) ${fmt(t0.analysis.distance.fit.slope)} cm/s · R²=${fmt(t0.analysis.distance.fit.r2, 3)} · 평균 속력 ${fmt(t0.analysis.speed.meanCmps)} cm/s` }));
 
-  ANALYSIS_QUESTIONS.forEach((item, i) => {
+  // measured graphs replayed from step 3 (canvases filled after the card mounts)
+  const graphs = el("div", { class: "graphs" });
+  const g1 = el("div", { class: "graph-box" });
+  g1.append(el("h4", { textContent: "시간–이동 거리 그래프" }), wrapCanvas("aDistChart"));
+  const g2 = el("div", { class: "graph-box" });
+  g2.append(el("h4", { textContent: "시간–속력 그래프" }), wrapCanvas("aSpeedChart"));
+  graphs.append(g1, g2);
+  card.append(graphs);
+
+  ANALYSIS_ITEMS.forEach((item, i) => {
     card.append(el("label", { class: "field", textContent: `질문 ${i + 1}. ${item.q}` }));
-    const ta = el("textarea", { value: model.analysisAnswers[item.key] ?? "" });
-    ta.addEventListener("input", () => (model.analysisAnswers[item.key] = ta.value));
-    card.append(ta);
+    if (item.type === "choice") {
+      card.append(
+        radioChoices(
+          `analysis-${item.key}`,
+          item.options.map((o) => ({ key: o, label: o })),
+          model.analysisAnswers[item.key] ?? "",
+          (v) => (model.analysisAnswers[item.key] = v),
+        ),
+      );
+    } else {
+      if (item.hint) card.append(el("p", { class: "q-hint", textContent: `힌트 · ${item.hint}` }));
+      const ta = el("textarea", { value: model.analysisAnswers[item.key] ?? "" });
+      ta.addEventListener("input", () => (model.analysisAnswers[item.key] = ta.value));
+      card.append(ta);
+    }
   });
 
   if (model.trials.length === 2) {
@@ -709,6 +779,11 @@ function renderAnalyze(): void {
 
   card.append(navRow({ onNext: unlockNext }));
   appHost.append(card);
+
+  // Draw the measured trials onto the (now-mounted) analysis canvases.
+  analysisCharts?.destroy();
+  analysisCharts = new MotionCharts(qs<HTMLCanvasElement>("#aDistChart")!, qs<HTMLCanvasElement>("#aSpeedChart")!);
+  model.trials.forEach((t, i) => analysisCharts!.setTrial(i, t.label, t.samples));
 }
 
 // ---- STEP 5: AI 평가와 피드백 ----

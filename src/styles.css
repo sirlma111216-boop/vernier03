@@ -106,6 +106,7 @@ textarea, input[type=text], input[type=date], select, input[type=number] {
 textarea { min-height: 92px; resize: vertical; line-height: 1.5; }
 textarea:focus, input:focus, select:focus { outline: none; border-color: var(--teal); box-shadow: 0 0 0 3px rgba(14,158,148,.12); }
 label.field { display: block; font-size: 14px; font-weight: 600; margin: 14px 0 6px; }
+.q-hint { font-size: 13px; color: var(--muted); margin: 0 0 8px; }
 
 /* ===== checklist ===== */
 .checklist { display: grid; gap: 10px; margin: 10px 0; }
