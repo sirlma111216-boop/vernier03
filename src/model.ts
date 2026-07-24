@@ -58,6 +58,9 @@ export interface GeminiFeedback {
   modelConclusion: string;
 }
 
+/** How this student takes part: measuring themselves, or analysing shared data. */
+export type ShareMode = "own" | "shared";
+
 export interface AppModel {
   identity: ReportIdentity;
   predictions: Predictions;
@@ -67,6 +70,16 @@ export interface AppModel {
   studentConclusion: string;
   feedback: GeminiFeedback | null;
   measurementSettings: MeasurementSettings;
+  /** Chosen route through the steps. */
+  shareMode: ShareMode;
+  /** Where the trial data came from (drives the provenance badge and report). */
+  dataSource: ShareMode;
+  /** Code issued after uploading, or the code used to receive data. */
+  shareCode: string | null;
+  /** Anonymous group label of the measuring group, when data was received. */
+  sharedFrom: string | null;
+  /** Anonymous label this group uploads under. Never a personal name. */
+  groupLabel: string;
 }
 
 export interface MeasurementSettings {
@@ -104,5 +117,10 @@ export function createEmptyModel(): AppModel {
     studentConclusion: "",
     feedback: null,
     measurementSettings: { ...DEFAULT_SETTINGS },
+    shareMode: "own",
+    dataSource: "own",
+    shareCode: null,
+    sharedFrom: null,
+    groupLabel: "",
   };
 }

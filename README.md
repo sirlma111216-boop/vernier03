@@ -44,6 +44,19 @@ Cloudflare 엣지에서 `generativelanguage.googleapis.com`(AI Studio)를 호출
 `GCP_SERVICE_ACCOUNT`가 있으면 Vertex, 없으면 `GEMINI_API_KEY`로 AI Studio를 사용합니다.
 Cloudflare 대시보드에서는 **Settings → Variables and Secrets(런타임)** 에 **Secret 타입**으로 등록하세요.
 
+### 모둠 데이터 공유 (선택)
+
+센서가 모둠당 1대뿐일 때, 한 명이 측정해 6자리 공유 코드를 만들면 나머지 학생이 코드로 같은
+자료를 받아 각자 분석합니다. (측정 자료만 전송하며 이름·학교 등 개인정보는 보내지 않습니다.)
+
+1. Supabase 프로젝트 SQL Editor에서 [`supabase/share-sessions.sql`](supabase/share-sessions.sql) 실행
+   (테이블은 RLS로 잠그고 함수 2개만 anon에 개방 — anon 키가 공개돼도 임의 조회·삭제 불가)
+2. 시크릿 등록 후 **재배포**:
+   - `wrangler pages secret put SUPABASE_URL`
+   - `wrangler pages secret put SUPABASE_ANON_KEY` (publishable/anon 키)
+
+미설정이면 공유 기능만 조용히 비활성화되고, 측정·분석·보고서는 그대로 동작합니다.
+
 ## 문서
 
 - [docs/PASCO_MOTION_EXPERIMENT_NOTES.md](docs/PASCO_MOTION_EXPERIMENT_NOTES.md) — 아키텍처·BLE 구현 상태·데이터 처리 규칙·한계

@@ -21,16 +21,44 @@ import { PascoMotionAdapter } from "./sensors/pasco/PascoMotionAdapter";
 import { DemoMotionAdapter, type DemoSpeedProfile } from "./sensors/demo/DemoMotionAdapter";
 import { compareTrials } from "./sensors/motion/motionAnalysis";
 import { describeMotionQuality } from "./sensors/motion/motionQuality";
+import { buildSharePayload, isSharePayload, restoreTrials } from "./share/sharePayload";
+import {
+  CODE_PATTERN,
+  SHARE_EXPIRY_DAYS,
+  createShareSession,
+  getShareSession,
+  isNotConfiguredError,
+  isNotFoundError,
+  loadShareConfig,
+  normalizeCode,
+  recallIssuedCode,
+  rememberIssuedCode,
+} from "./share/shareClient";
 
-const STEP_TITLES = [
-  "예상하기",
-  "실험 준비",
-  "센서 연결",
-  "운동 측정",
-  "자료 분석과 해석",
-  "AI 평가와 피드백",
-  "결론과 보고서",
-];
+/** Pseudo-step shown only in shared mode, right after the prediction step. */
+const CODE_STEP = 7;
+
+const STEP_TITLES: Record<number, string> = {
+  0: "예상하기",
+  1: "실험 준비",
+  2: "센서 연결",
+  3: "운동 측정",
+  4: "자료 분석과 해석",
+  5: "AI 평가와 피드백",
+  6: "결론과 보고서",
+  [CODE_STEP]: "모둠 데이터 받기",
+};
+
+const OWN_SEQUENCE = [0, 1, 2, 3, 4, 5, 6];
+/**
+ * Students who receive data still make their own prediction FIRST, then enter
+ * the code, then analyse. Measurement steps are skipped entirely.
+ */
+const SHARED_SEQUENCE = [0, CODE_STEP, 4, 5, 6];
+
+function sequence(): number[] {
+  return model.shareMode === "shared" ? SHARED_SEQUENCE : OWN_SEQUENCE;
+}
 
 // ---- app state ----
 const model: AppModel = createEmptyModel();
@@ -49,7 +77,8 @@ let measurement: MeasurementController | null = null;
 // never goes silent (and never idle-disconnects) between recordings.
 let measureStreamOff: (() => void) | null = null;
 let currentStep = 0;
-let maxStep = 0;
+/** Furthest position reached WITHIN the current sequence (not a raw step id). */
+let maxSeqIndex = 0;
 let checklistDone = false;
 
 const appHost = qs("#app")!;
@@ -59,23 +88,39 @@ const stepperHost = qs("#stepper")!;
 // Stepper + navigation
 // ============================================================
 function canEnter(step: number): boolean {
-  if (step <= maxStep) return true;
-  return false;
+  const i = sequence().indexOf(step);
+  return i >= 0 && i <= maxSeqIndex;
 }
 
 function renderStepper(): void {
   clear(stepperHost);
-  STEP_TITLES.forEach((title, i) => {
+  const seq = sequence();
+  const currentIndex = seq.indexOf(currentStep);
+  seq.forEach((step, i) => {
     const chip = el("button", {
-      class: `step-chip ${i === currentStep ? "active" : ""} ${i < currentStep ? "done" : ""}`,
+      class: `step-chip ${step === currentStep ? "active" : ""} ${i < currentIndex ? "done" : ""}`,
       onclick: () => {
-        if (canEnter(i)) goTo(i);
+        if (canEnter(step)) goTo(step);
       },
     });
-    chip.disabled = !canEnter(i) && i !== currentStep;
-    chip.append(el("span", { class: "n", textContent: String(i) }), document.createTextNode(title));
+    chip.disabled = !canEnter(step) && step !== currentStep;
+    chip.append(
+      el("span", { class: "n", textContent: String(i) }),
+      document.createTextNode(STEP_TITLES[step] ?? ""),
+    );
     stepperHost.append(chip);
   });
+}
+
+/**
+ * Switches route. Called when the student picks "measure myself" vs "receive a
+ * code"; keeps the unlocked position consistent with the new sequence.
+ */
+function setShareMode(mode: AppModel["shareMode"]): void {
+  if (model.shareMode === mode) return;
+  model.shareMode = mode;
+  maxSeqIndex = Math.max(0, sequence().indexOf(currentStep));
+  renderStepper();
 }
 
 function goTo(step: number): void {
@@ -96,15 +141,33 @@ function goTo(step: number): void {
     analysisCharts = null;
   }
   currentStep = step;
-  maxStep = Math.max(maxStep, step);
+  maxSeqIndex = Math.max(maxSeqIndex, sequence().indexOf(step));
   renderStepper();
   renderStep();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 function unlockNext(): void {
-  maxStep = Math.max(maxStep, currentStep + 1);
+  maxSeqIndex = Math.max(maxSeqIndex, sequence().indexOf(currentStep) + 1);
   renderStepper();
+}
+
+/** Step id that follows / precedes the current one within the active sequence. */
+function stepAfter(step: number): number {
+  const seq = sequence();
+  const i = seq.indexOf(step);
+  return seq[Math.min(i + 1, seq.length - 1)];
+}
+
+function stepBefore(step: number): number {
+  const seq = sequence();
+  const i = seq.indexOf(step);
+  return seq[Math.max(i - 1, 0)];
+}
+
+function isLastStep(step: number): boolean {
+  const seq = sequence();
+  return seq.indexOf(step) === seq.length - 1;
 }
 
 function navRow(opts: { nextLabel?: string; nextEnabled?: boolean; onNext?: () => void } = {}): HTMLElement {
@@ -112,11 +175,11 @@ function navRow(opts: { nextLabel?: string; nextEnabled?: boolean; onNext?: () =
   const prev = el("button", {
     class: "btn btn-neutral",
     textContent: "← 이전",
-    onclick: () => goTo(Math.max(0, currentStep - 1)),
+    onclick: () => goTo(stepBefore(currentStep)),
   });
-  prev.style.visibility = currentStep === 0 ? "hidden" : "visible";
+  prev.style.visibility = sequence().indexOf(currentStep) === 0 ? "hidden" : "visible";
   row.append(prev);
-  if (currentStep < 6) {
+  if (!isLastStep(currentStep)) {
     const next = el("button", {
       class: "btn btn-primary",
       textContent: opts.nextLabel ?? "다음 →",
@@ -124,7 +187,7 @@ function navRow(opts: { nextLabel?: string; nextEnabled?: boolean; onNext?: () =
         // The button is only clickable when enabled, so navigation is always allowed here.
         if (next.disabled) return;
         opts.onNext?.();
-        goTo(currentStep + 1);
+        goTo(stepAfter(currentStep));
       },
     });
     next.disabled = opts.nextEnabled === false;
@@ -148,7 +211,18 @@ function renderStep(): void {
     case 4: return renderAnalyze();
     case 5: return renderFeedback();
     case 6: return renderReport();
+    case CODE_STEP: return renderReceiveCode();
   }
+}
+
+/** Banner shown on every data step so received data is never mistaken for own. */
+function provenanceBadge(): HTMLElement | null {
+  if (model.dataSource !== "shared") return null;
+  const from = model.sharedFrom ? `${model.sharedFrom}의 데이터` : "다른 모둠의 데이터";
+  return el("div", {
+    class: "notice shared-badge",
+    html: `<b>${escapeHtml(from)}로 탐구 중</b> · 공유 코드 <b>${escapeHtml(model.shareCode ?? "")}</b> — 내가 직접 측정한 자료가 아닙니다.`,
+  });
 }
 
 // ---- STEP 0: 예상하기 ----
@@ -200,9 +274,143 @@ function renderPredict(): void {
 
   card.append(
     el("p", { class: "notice info", textContent: "정답은 실험을 마친 뒤에 스스로 확인하게 됩니다. 지금은 자유롭게 예상해 보세요." }),
-    navRow({ onNext: unlockNext }),
   );
+
+  // Route choice — placed AFTER the prediction so receivers still commit to
+  // their own hypothesis before they ever see another group's data.
+  card.append(el("h3", { textContent: "이 실험을 어떻게 진행할까요?" }));
+  const nav = navRow({ onNext: unlockNext });
+  card.append(
+    radioChoices(
+      "share-mode",
+      [
+        { key: "own", label: "직접 센서로 측정하기" },
+        { key: "shared", label: "모둠원이 측정한 데이터를 공유 코드로 받기" },
+      ],
+      model.shareMode,
+      (v) => {
+        setShareMode(v === "shared" ? "shared" : "own");
+        // The next step differs per route, so relabel the button immediately.
+        const btn = nav.querySelector(".btn-primary") as HTMLButtonElement | null;
+        if (btn) btn.textContent = model.shareMode === "shared" ? "공유 코드 입력하러 가기 →" : "다음 →";
+      },
+    ),
+  );
+  const nextBtn = nav.querySelector(".btn-primary") as HTMLButtonElement | null;
+  if (nextBtn && model.shareMode === "shared") nextBtn.textContent = "공유 코드 입력하러 가기 →";
+  card.append(nav);
   appHost.append(card);
+}
+
+// ---- CODE STEP: 모둠 데이터 받기 (shared mode only) ----
+function renderReceiveCode(): void {
+  const card = el("div", { class: "card" });
+  card.append(
+    el("h2", { textContent: "모둠원이 측정한 데이터를 받아요" }),
+    el("p", {
+      class: "lead",
+      textContent:
+        "측정한 친구가 알려 준 6자리 공유 코드를 입력하면, 그 모둠의 측정 자료를 그대로 불러와 분석할 수 있습니다.",
+    }),
+  );
+
+  const badge = provenanceBadge();
+  if (badge) card.append(badge);
+
+  card.append(el("label", { class: "field", textContent: "공유 코드 (예: K7QF2M)" }));
+  const input = el("input", {
+    type: "text",
+    value: model.shareCode ?? "",
+    placeholder: "6자리 코드",
+    style: "letter-spacing:.25em;text-transform:uppercase;font-size:20px;font-weight:700",
+  });
+  input.setAttribute("inputmode", "latin");
+  input.setAttribute("autocapitalize", "characters");
+  card.append(input);
+
+  const btnRow = el("div", { class: "btn-row" });
+  const loadBtn = el("button", { class: "btn btn-primary", textContent: "데이터 받기" });
+  loadBtn.disabled = !CODE_PATTERN.test(normalizeCode(input.value));
+  btnRow.append(loadBtn);
+  card.append(btnRow);
+
+  const out = el("div", { id: "receiveOut" });
+  card.append(out);
+
+  card.append(
+    el("p", {
+      class: "q-hint",
+      textContent: `공유 코드는 발급 후 ${SHARE_EXPIRY_DAYS}일 동안 사용할 수 있습니다. 0/O, 1/I/L처럼 헷갈리는 문자는 코드에 쓰이지 않습니다.`,
+    }),
+  );
+
+  const nav = navRow({ nextEnabled: model.trials.length > 0, onNext: unlockNext });
+  card.append(nav);
+  appHost.append(card);
+
+  input.addEventListener("input", () => {
+    input.value = normalizeCode(input.value);
+    loadBtn.disabled = !CODE_PATTERN.test(input.value);
+  });
+
+  loadBtn.addEventListener("click", async () => {
+    const code = normalizeCode(input.value);
+    if (!CODE_PATTERN.test(code)) return;
+    loadBtn.disabled = true;
+    loadBtn.textContent = "받는 중…";
+    out.replaceChildren(el("div", { class: "notice info", textContent: "데이터를 불러오는 중입니다…" }));
+    try {
+      const raw = await getShareSession(code);
+      if (!isSharePayload(raw)) {
+        out.replaceChildren(
+          el("div", { class: "notice warn", textContent: "이 코드의 자료는 이 실험(등속 운동 그래프)의 데이터가 아닙니다. 코드를 다시 확인해 주세요." }),
+        );
+        return;
+      }
+      const trials = restoreTrials(raw);
+      if (trials.length === 0) {
+        out.replaceChildren(
+          el("div", { class: "notice warn", textContent: "받은 자료에 분석할 수 있는 측정값이 없습니다. 측정한 친구에게 다시 공유해 달라고 해 주세요." }),
+        );
+        return;
+      }
+      // Only now do we touch local state — a failed load never destroys data.
+      model.trials = trials;
+      model.comparison = trials.length === 2 ? compareTrials(trials[0].analysis, trials[1].analysis) : null;
+      model.dataSource = "shared";
+      model.shareCode = code;
+      model.sharedFrom = raw.groupLabel ?? null;
+      model.measurementSettings = { ...model.measurementSettings, ...raw.settings };
+      unlockNext();
+      renderStep();
+    } catch (err) {
+      if (isNotConfiguredError(err)) {
+        out.replaceChildren(
+          el("div", { class: "notice warn", textContent: "공유 서버가 아직 설정되지 않았습니다. 선생님께 알려 주세요. (지금까지 작성한 내용은 그대로 남아 있습니다.)" }),
+        );
+      } else if (isNotFoundError(err)) {
+        out.replaceChildren(
+          el("div", { class: "notice warn", textContent: `‘${code}’ 코드를 찾을 수 없습니다. 철자를 다시 확인하거나, 발급한 지 ${SHARE_EXPIRY_DAYS}일이 지나지 않았는지 확인해 주세요.` }),
+        );
+      } else {
+        out.replaceChildren(
+          el("div", { class: "notice warn", textContent: "데이터를 받지 못했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요." }),
+        );
+      }
+    } finally {
+      loadBtn.disabled = !CODE_PATTERN.test(normalizeCode(input.value));
+      loadBtn.textContent = "데이터 받기";
+    }
+  });
+
+  if (model.trials.length > 0 && model.dataSource === "shared") {
+    out.replaceChildren(
+      el("div", {
+        class: "notice ok-note",
+        textContent: `데이터를 받았습니다 · 측정 ${model.trials.length}회, 표본 ${model.trials[0].samples.length}개. ‘다음’을 눌러 분석을 시작하세요.`,
+      }),
+    );
+  }
 }
 
 // ---- STEP 1: 실험 준비 ----
@@ -463,10 +671,12 @@ function renderMeasure(): void {
 
   const resultHost = el("div", { id: "measureResult" });
   card.append(resultHost);
+  card.append(sharePanel());
 
   const nav = navRow({ nextEnabled: model.trials.length > 0, onNext: unlockNext });
   card.append(nav);
   appHost.append(card);
+  refreshSharePanel();
 
   // init charts
   charts?.destroy();
@@ -561,6 +771,117 @@ function renderMeasure(): void {
   });
 }
 
+// ---- share panel (measurer uploads, gets a 6-character code) ----
+function sharePanel(): HTMLElement {
+  return el("div", { class: "subcard", id: "sharePanel" });
+}
+
+let uploading = false;
+
+async function refreshSharePanel(): Promise<void> {
+  const box = qs("#sharePanel");
+  if (!box) return;
+
+  const body = el("div");
+  body.append(el("b", { textContent: "모둠원과 데이터 공유하기" }));
+
+  if (model.trials.length === 0) {
+    body.append(
+      el("p", { class: "q-hint", style: "margin:6px 0 0", textContent: "측정을 마치면 6자리 공유 코드를 만들어 모둠원에게 전달할 수 있습니다." }),
+    );
+    box.replaceChildren(body);
+    return;
+  }
+
+  // Sharing is an optional add-on: with no server configured we say so once and
+  // never offer a button that can only fail.
+  if (!(await loadShareConfig())) {
+    body.append(
+      el("p", { class: "q-hint", style: "margin:6px 0 0", textContent: "이 기기에서는 공유 기능을 사용할 수 없습니다(공유 서버 미설정). 측정과 분석은 그대로 진행할 수 있습니다." }),
+    );
+    box.replaceChildren(body);
+    return;
+  }
+
+  body.append(
+    el("p", {
+      class: "q-hint",
+      style: "margin:6px 0 8px",
+      textContent: `측정 자료만 올라가고 이름·학교 같은 개인정보는 전송되지 않습니다. 코드는 ${SHARE_EXPIRY_DAYS}일 동안 쓸 수 있습니다.`,
+    }),
+  );
+
+  const labelWrap = el("div");
+  labelWrap.append(el("label", { class: "field", style: "margin-top:0", textContent: "모둠 표시 (선택 · 예: 3모둠)" }));
+  const labelInput = el("input", { type: "text", value: model.groupLabel, placeholder: "3모둠" });
+  labelInput.addEventListener("input", () => (model.groupLabel = labelInput.value));
+  labelWrap.append(labelInput);
+  body.append(labelWrap);
+
+  const row = el("div", { class: "btn-row" });
+  const shareBtn = el("button", {
+    class: "btn btn-primary",
+    textContent: model.shareCode ? "새 코드로 다시 공유하기" : "공유 코드 만들기",
+  });
+  row.append(shareBtn);
+  body.append(row);
+
+  const out = el("div", { id: "shareOut" });
+  body.append(out);
+  box.replaceChildren(body);
+
+  // Show a code issued earlier (this session or a previous one).
+  const remembered = model.shareCode ? null : recallIssuedCode();
+  if (model.shareCode) renderIssuedCode(out, model.shareCode);
+  else if (remembered) renderIssuedCode(out, remembered.code, true);
+
+  shareBtn.addEventListener("click", async () => {
+    if (uploading || model.trials.length === 0) return;
+    uploading = true;
+    shareBtn.disabled = true;
+    shareBtn.textContent = "업로드 중…";
+    try {
+      const payload = buildSharePayload(model, model.groupLabel);
+      const code = await createShareSession(payload);
+      model.shareCode = code;
+      rememberIssuedCode(code, model.groupLabel);
+      renderIssuedCode(out, code);
+    } catch (err) {
+      // Never touch the measured data on failure — sharing is an add-on.
+      const msg = isNotConfiguredError(err)
+        ? "공유 서버가 아직 설정되지 않았습니다. 선생님께 알려 주세요. (측정 자료는 그대로 남아 있습니다.)"
+        : "공유에 실패했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요. (측정 자료는 그대로 남아 있습니다.)";
+      out.replaceChildren(el("div", { class: "notice warn", textContent: msg }));
+    } finally {
+      uploading = false;
+      shareBtn.disabled = false;
+      shareBtn.textContent = model.shareCode ? "새 코드로 다시 공유하기" : "공유 코드 만들기";
+    }
+  });
+}
+
+function renderIssuedCode(host: HTMLElement, code: string, fromStorage = false): void {
+  const wrap = el("div", { class: "share-code-box" });
+  wrap.append(
+    el("div", { class: "share-code-label", textContent: fromStorage ? "지난번에 만든 공유 코드" : "공유 코드가 만들어졌습니다" }),
+    el("div", { class: "share-code", textContent: code }),
+    el("div", { class: "q-hint", textContent: `모둠원에게 이 코드를 알려 주세요. ${SHARE_EXPIRY_DAYS}일 동안 사용할 수 있습니다.` }),
+  );
+  const copyBtn = el("button", { class: "btn btn-ghost", textContent: "코드 복사" });
+  copyBtn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      copyBtn.textContent = "복사됨 ✓";
+      setTimeout(() => (copyBtn.textContent = "코드 복사"), 1500);
+    } catch {
+      // Clipboard is unavailable outside secure contexts.
+      copyBtn.textContent = "코드를 길게 눌러 선택하세요";
+    }
+  });
+  wrap.append(copyBtn);
+  host.replaceChildren(wrap);
+}
+
 function finalizeTrial(partial: Omit<TrialData, "index" | "label">, settings: MeasurementSettings): void {
   const index = (model.trials.length === 0 ? 1 : 2) as 1 | 2;
   const trial: TrialData = { ...partial, index, label: `${index}차 측정` };
@@ -574,6 +895,9 @@ function finalizeTrial(partial: Omit<TrialData, "index" | "label">, settings: Me
   }
 
   renderTrialResult(trial, settings);
+  // New data invalidates any previously issued code — offer a fresh upload.
+  model.shareCode = null;
+  refreshSharePanel();
   unlockNext();
   const nav = appHost.querySelector(".nav-row");
   if (nav) enableNextButton(nav as HTMLElement);
@@ -732,10 +1056,22 @@ function renderAnalyze(): void {
   );
 
   if (model.trials.length === 0) {
-    card.append(el("div", { class: "notice warn", textContent: "먼저 3단계에서 운동을 측정해 주세요." }), navRow());
+    card.append(
+      el("div", {
+        class: "notice warn",
+        textContent:
+          model.shareMode === "shared"
+            ? "먼저 공유 코드를 입력해 모둠원의 데이터를 받아 주세요."
+            : "먼저 3단계에서 운동을 측정해 주세요.",
+      }),
+      navRow(),
+    );
     appHost.append(card);
     return;
   }
+
+  const analyzeBadge = provenanceBadge();
+  if (analyzeBadge) card.append(analyzeBadge);
 
   // recap chips
   const t0 = model.trials[0];
@@ -743,11 +1079,12 @@ function renderAnalyze(): void {
     `<b>${t0.label} 요약</b> · 기울기(속력) ${fmt(t0.analysis.distance.fit.slope)} cm/s · R²=${fmt(t0.analysis.distance.fit.r2, 3)} · 평균 속력 ${fmt(t0.analysis.speed.meanCmps)} cm/s` }));
 
   // measured graphs replayed from step 3 (canvases filled after the card mounts)
+  const shared = model.dataSource === "shared";
   const graphs = el("div", { class: "graphs" });
   const g1 = el("div", { class: "graph-box" });
-  g1.append(el("h4", { textContent: "시간–이동 거리 그래프" }), wrapCanvas("aDistChart"));
+  g1.append(el("h4", { textContent: shared ? "시간–이동 거리 그래프 (받은 자료)" : "시간–이동 거리 그래프" }), wrapCanvas("aDistChart"));
   const g2 = el("div", { class: "graph-box" });
-  g2.append(el("h4", { textContent: "시간–속력 그래프" }), wrapCanvas("aSpeedChart"));
+  g2.append(el("h4", { textContent: shared ? "시간–속력 그래프 (받은 자료)" : "시간–속력 그래프" }), wrapCanvas("aSpeedChart"));
   graphs.append(g1, g2);
   card.append(graphs);
 
@@ -799,6 +1136,9 @@ function renderFeedback(): void {
     appHost.append(card);
     return;
   }
+
+  const fbBadge = provenanceBadge();
+  if (fbBadge) card.append(fbBadge);
 
   const runBtn = el("button", { class: "btn btn-primary", textContent: model.feedback ? "AI 피드백 다시 받기" : "AI 피드백 받기" });
   const out = el("div", { id: "aiOut" });
@@ -856,6 +1196,9 @@ function renderReport(): void {
     el("h2", { textContent: "나의 탐구 보고서를 완성해요" }),
     el("p", { class: "lead", textContent: "두 그래프를 이용해 결론을 쓰고, 보고서를 만들어 인쇄하거나 PDF로 저장하세요." }),
   );
+
+  const reportBadge = provenanceBadge();
+  if (reportBadge) card.append(reportBadge);
 
   card.append(el("label", { class: "field", textContent: "결론. 등속 운동하는 물체의 이동 거리와 속력이 시간에 따라 어떻게 변하는지, 두 그래프를 이용하여 설명하세요." }));
   const conc = el("textarea", { value: model.studentConclusion, style: "min-height:120px" });

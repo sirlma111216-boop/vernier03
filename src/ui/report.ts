@@ -3,6 +3,7 @@
 import type { AppModel, TrialData } from "../model";
 import { fmt, escapeHtml as esc } from "./dom";
 import { setupIllustrationSVG } from "./illustration";
+import { dataSourceLabel } from "../share/sharePayload";
 
 const PREDICTION_LABELS: Record<string, Record<string, string>> = {
   q1: {
@@ -134,7 +135,8 @@ export function buildReportHtml(model: AppModel, chartImages: { distance: string
       </ul></section>
 
     <section class="rp-section"><h2>5. 측정 조건</h2>
-      <p>측정 시간 ${model.measurementSettings.durationS}초 · 자료 수집 약 ${model.measurementSettings.sampleRateHz} Hz · 운동 방향: ${directionLabel(model.measurementSettings.direction)}</p></section>
+      <p>측정 시간 ${model.measurementSettings.durationS}초 · 자료 수집 약 ${model.measurementSettings.sampleRateHz} Hz · 운동 방향: ${directionLabel(model.measurementSettings.direction)}</p>
+      <p>자료 출처: <b>${esc(dataSourceLabel(model))}</b></p></section>
 
     <section class="rp-section"><h2>6. 측정 결과와 그래프</h2>${trialsHtml}</section>
     ${comparisonHtml}

@@ -108,6 +108,15 @@ textarea:focus, input:focus, select:focus { outline: none; border-color: var(--t
 label.field { display: block; font-size: 14px; font-weight: 600; margin: 14px 0 6px; }
 .q-hint { font-size: 13px; color: var(--muted); margin: 0 0 8px; }
 
+/* ===== group data sharing ===== */
+.notice.shared-badge { background: #FFF4EC; border-color: #F6C7B2; color: #7A3B22; }
+.notice.ok-note { background: #ECFBF6; border-color: #BfeAe3; color: #14615B; }
+.share-code-box { margin-top: 12px; padding: 14px 16px; border: 1.5px dashed var(--teal);
+  border-radius: 14px; background: #F2FBF9; text-align: center; }
+.share-code-label { font-size: 13px; font-weight: 600; color: var(--muted); }
+.share-code { font-family: 'Sora', sans-serif; font-weight: 800; font-size: 34px;
+  letter-spacing: .18em; color: var(--teal); margin: 6px 0 4px; user-select: all; }
+
 /* ===== checklist ===== */
 .checklist { display: grid; gap: 10px; margin: 10px 0; }
 .check-item { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; border: 1.5px solid var(--line); border-radius: 12px; background: #fff; cursor: pointer; }
