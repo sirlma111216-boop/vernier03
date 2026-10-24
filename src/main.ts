@@ -1141,6 +1141,9 @@ function renderFeedback(): void {
   if (fbBadge) card.append(fbBadge);
 
   const runBtn = el("button", { class: "btn btn-primary", textContent: model.feedback ? "AI 피드백 다시 받기" : "AI 피드백 받기" });
+  runBtn.disabled = true;
+  runBtn.textContent = "AI 피드백 일시 중단";
+  card.append(el("div", { class: "notice warn", textContent: "학생용 AI 기능을 일시 중단했습니다. 측정·기록 기능은 계속 사용할 수 있습니다." }));
   const out = el("div", { id: "aiOut" });
   card.append(el("div", { class: "btn-row" }, [runBtn]), out);
 
